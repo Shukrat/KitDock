@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 16
+local VERSION = 17
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -253,9 +253,83 @@ local function Glide(kit, bx, by, bscale)
     kit.dockGrow:SetScaleTo(1, 1)
     kit.dockAG:Play()
 end
--- The kits use it too (KeepOnScreen), so a free kit nudged in from the edge
--- slides the same way a docked one does.
-D.Glide = Glide
+
+-- Kit buttons glide by being moved for real, a little each frame, rather
+-- than with an animation: a new layout part-way through (the live merge
+-- preview makes them often) then starts from wherever the kit actually is
+-- on screen, so nothing snaps back to the old spot or jumps ahead.
+local tweens = {}
+local tweener = CreateFrame("Frame")
+tweener:Hide()
+
+local function Smooth(t) return t * t * (3 - 2 * t) end
+
+local function TweenApply(kit, tw, k)
+    local s = tw.ss + (tw.es - tw.ss) * k
+    local x = tw.sx + (tw.ex - tw.sx) * k
+    local y = tw.sy + (tw.ey - tw.sy) * k
+    kit:SetScale(s)
+    local own = s * tw.parentEff / UIParent:GetEffectiveScale() -- UIParent units per kit unit
+    kit:ClearAllPoints()
+    kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / own, y / own)
+end
+
+local function TweenFinish(kit, tw)
+    tweens[kit] = nil
+    kit:SetScale(tw.es)
+    kit:ClearAllPoints()
+    kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
+end
+
+-- Stop a kit's glide where it should end (before something else moves it,
+-- or when combat starts and frames can't move).
+local function StopTween(kit)
+    local tw = tweens[kit]
+    if tw then TweenFinish(kit, tw) end
+end
+D.StopTween = StopTween
+
+tweener:SetScript("OnUpdate", function(self, dt)
+    local any = false
+    for kit, tw in pairs(tweens) do
+        tw.t = tw.t + dt
+        if tw.t >= GLIDE then
+            TweenFinish(kit, tw)
+        else
+            TweenApply(kit, tw, Smooth(tw.t / GLIDE))
+            any = true
+        end
+    end
+    if not any and not next(tweens) then self:Hide() end
+end)
+
+-- The kit has just been put where it ends up (anchor and scale); glide it
+-- there from bx, by (in its old own units) at old effective scale bscale.
+local function KitGlide(kit, bx, by, bscale)
+    if not bx or not kit:IsShown() or InCombatLockdown() then return end
+    local ui = UIParent:GetEffectiveScale()
+    local ex, ey = Center(kit)
+    if not ex then return end
+    local es = kit:GetScale()
+    local parentEff = kit:GetEffectiveScale() / es
+    local sx, sy, ss = bx * bscale / ui, by * bscale / ui, bscale / parentEff
+    if math.abs(sx - ex) < 0.5 and math.abs(sy - ey) < 0.5 and math.abs(ss - es) < 0.001 then return end
+    local p, rel, rp, x, y = kit:GetPoint(1)
+    if kit.dockAG then kit.dockAG:Stop() end
+    tweens[kit] = { t = 0, sx = sx, sy = sy, ss = ss, ex = ex, ey = ey, es = es, parentEff = parentEff,
+        p = p, rel = rel, rp = rp, x = x, y = y }
+    TweenApply(kit, tweens[kit], 0)
+    tweener:Show()
+end
+
+-- The kits use it too (KeepOnScreen, and for their pinned slots), so a free
+-- kit nudged in from the edge slides the same way a docked one does.
+D.Glide = function(frame, bx, by, bscale)
+    for _, api in pairs(D.kits) do
+        if api.kit == frame then return KitGlide(frame, bx, by, bscale) end
+    end
+    return Glide(frame, bx, by, bscale)
+end
 
 -- Each kit's own Size setting, times the shrink while docked and closed.
 -- Tells the kit (Compact) so it can hide extras that sit around its button.
@@ -303,18 +377,31 @@ function D.Layout()
     local keys = DockedKeys()
     local pin = Pin()
 
+    -- Where every kit is on screen right now, before anything moves (moving
+    -- the pin moves the kits on it), so each glides from where it really was.
+    local before = {}
+    for key, api in pairs(D.kits) do
+        local kit = api.kit
+        if key ~= D.skip and kit:IsShown() then
+            local x, y = kit:GetCenter()
+            if x then before[key] = { x, y, kit:GetEffectiveScale() } end
+        end
+    end
+
     -- Floating kits: their own saved spots and size, never tucked. One that
     -- was on the pin a moment ago glides to its spot like a docked kit would.
     for key, api in pairs(D.kits) do
         if not InList(keys, key) and key ~= D.skip then
             local kit = api.kit
+            local b = before[key]
             local bx, by, bs
-            if kit:IsShown() then bx, by = kit:GetCenter() bs = kit:GetEffectiveScale() end
+            if b then bx, by, bs = b[1], b[2], b[3] end
+            StopTween(kit)
             if api.BeginMove then api.BeginMove() end
             SetCompact(api, false)
             api.Tuck(false)
             api.PlaceFree()
-            Glide(kit, bx, by, bs)
+            KitGlide(kit, bx, by, bs)
             if api.EndMove then api.EndMove() end
         end
     end
@@ -358,13 +445,10 @@ function D.Layout()
     -- Where each docked kit is now, so it can glide to its new spot (and
     -- where its pinned slots are: BeginMove / EndMove let the kit slide them
     -- along instead of them jumping while the button glides).
-    local before = {}
     for _, k in ipairs(keys) do
         local api = D.kits[k]
-        local kit = api.kit
         if k ~= D.skip then
-            local x, y = kit:GetCenter()
-            if x and kit:IsShown() then before[k] = { x, y, kit:GetEffectiveScale() } end
+            StopTween(api.kit)
             if api.BeginMove then api.BeginMove() end
         end
     end
@@ -410,7 +494,7 @@ function D.Layout()
         kit:SetPoint("CENTER", pin, "CENTER", dx / ks, dy / ks)
         api.Tuck(openKey ~= nil and k ~= openKey)
         local b = before[k]
-        if b and not (openKey ~= nil and k ~= openKey) then Glide(kit, b[1], b[2], b[3]) end
+        if b and not (openKey ~= nil and k ~= openKey) then KitGlide(kit, b[1], b[2], b[3]) end
         if api.EndMove then api.EndMove() end
         end
     end
@@ -474,6 +558,7 @@ end
 local function Release(key)
     local api = D.kits[key]
     local kit = api.kit
+    StopTween(kit)
     local x, y = Center(kit)
     DB().docked[key] = false
     SetCompact(api, false)
@@ -551,7 +636,8 @@ local function Merge(key, target, targetDocked, cx, cy)
     -- Join the dock at the pin, on the side (two kits) or corner (three)
     -- it was dropped on.
     db.docked[key] = true
-    local px, py = Center(Pin())
+    local px, py
+    if db.pin then px, py = db.pin[1], db.pin[2] else px, py = Center(Pin()) end
     local ang = math.deg(math.atan2(cy - py, cx - px))
     local keys = DockedKeys()
     if #keys == 2 then
@@ -601,13 +687,13 @@ end
 
 -- What the dragged kit is over, judged against the dock as it was when the
 -- drag began (but against kits where they are on screen right now), with
--- the saved dock put back ready for Merge.
+-- the saved dock put back ready for Merge. The pin itself isn't moved here:
+-- the next layout does that, after noting where every kit is, so nothing on
+-- the pin jumps before it glides.
 local function Resolve(drag, key, cx, cy)
     local s = drag.snap
     Restore(s, true)
-    local target, targetDocked = DropTarget(key, cx, cy, s.pin and s.pin[1], s.pin and s.pin[2])
-    if s.pin and D.pin and (not target or targetDocked) then SetPinAt(s.pin[1], s.pin[2]) end
-    return target, targetDocked
+    return DropTarget(key, cx, cy, s.pin and s.pin[1], s.pin and s.pin[2])
 end
 
 local function Signature()
@@ -666,6 +752,7 @@ function D.DragStart(key)
     local api = D.kits[key]
     local kit = api.kit
     -- Lift the kit off the pin at the same spot so it can move freely.
+    StopTween(kit)
     local x, y = kit:GetCenter()
     if x then
         kit:ClearAllPoints()
@@ -972,6 +1059,7 @@ watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
 watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
 watcher:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_DISABLED" then
+        for kit in pairs(tweens) do StopTween(kit) end
         if D.pin and PinHidesInCombat() then
             D.pinCombatHidden = true
             D.pin:Hide()
