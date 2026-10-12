@@ -12,7 +12,7 @@ Each kit's `.pkgmeta` pulls this repository into `Libs/KitDock` when a release i
 externals:
   Libs/KitDock:
     url: https://github.com/Shukrat/KitDock
-    tag: v14
+    tag: v15
 ```
 
 and the kit's `.toc` loads `Libs\KitDock\KitDock.lua`.

@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 23
+local VERSION = 15
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
