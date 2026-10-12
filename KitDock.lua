@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 19
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -271,7 +271,15 @@ local function TweenApply(kit, tw, k)
     kit:SetScale(s)
     local own = s * tw.parentEff / UIParent:GetEffectiveScale() -- UIParent units per kit unit
     kit:ClearAllPoints()
-    kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / own, y / own)
+    tw.lx, tw.ly = x / own, y / own
+    kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", tw.lx, tw.ly)
+end
+
+-- Something else moved it mid-glide (its kit re-laid its slots, say): let
+-- that win rather than gliding back to the old spot.
+local function MovedElsewhere(kit, tw)
+    local p, rel, _, x, y = kit:GetPoint(1)
+    return p ~= "CENTER" or rel ~= UIParent or math.abs((x or 0) - tw.lx) > 0.01 or math.abs((y or 0) - tw.ly) > 0.01
 end
 
 local function TweenFinish(kit, tw)
@@ -285,7 +293,13 @@ end
 -- or when combat starts and frames can't move).
 local function StopTween(kit)
     local tw = tweens[kit]
-    if tw then TweenFinish(kit, tw) end
+    if not tw then return end
+    if MovedElsewhere(kit, tw) then
+        tweens[kit] = nil
+        kit:SetScale(tw.es)
+    else
+        TweenFinish(kit, tw)
+    end
 end
 D.StopTween = StopTween
 
@@ -293,7 +307,10 @@ tweener:SetScript("OnUpdate", function(self, dt)
     local any = false
     for kit, tw in pairs(tweens) do
         tw.t = tw.t + dt
-        if tw.t >= GLIDE then
+        if MovedElsewhere(kit, tw) then
+            tweens[kit] = nil
+            kit:SetScale(tw.es)
+        elseif tw.t >= GLIDE then
             TweenFinish(kit, tw)
         else
             TweenApply(kit, tw, Smooth(tw.t / GLIDE))
@@ -323,13 +340,9 @@ local function KitGlide(kit, bx, by, bscale)
 end
 
 -- The kits use it too (KeepOnScreen, and for their pinned slots), so a free
--- kit nudged in from the edge slides the same way a docked one does.
-D.Glide = function(frame, bx, by, bscale)
-    for _, api in pairs(D.kits) do
-        if api.kit == frame then return KitGlide(frame, bx, by, bscale) end
-    end
-    return Glide(frame, bx, by, bscale)
-end
+-- kit nudged in from the edge, and slots moving to a new arrangement, glide
+-- the same way and carry on smoothly if they're moved again part-way.
+D.Glide = KitGlide
 
 -- Each kit's own Size setting, times the shrink while docked and closed.
 -- Tells the kit (Compact) so it can hide extras that sit around its button.
@@ -468,8 +481,10 @@ function D.Layout()
             -- Its slots take the shape they'd have docked here (rings round
             -- its button in its slice), without resizing it under the cursor.
             if api.Compact then
+                if api.BeginMove then api.BeginMove() end -- its slots glide to the new shape
                 if n > 1 then api.Compact(true, angles[i], n == 2 and 170 or 115)
                 else api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+                if api.EndMove then api.EndMove() end
             end
         else
             SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
@@ -728,7 +743,11 @@ local function Preview(key, cx, cy)
         -- Away from everything: the dragged kit's slots go back to how they
         -- really are.
         local api = D.kits[key]
-        if not target and api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        if not target and api.Compact then
+            if api.BeginMove then api.BeginMove() end
+            api.Compact(api.compact or false, api.compactAngle, api.compactSpan)
+            if api.EndMove then api.EndMove() end
+        end
     end
 end
 
