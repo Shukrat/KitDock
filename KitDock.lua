@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 15
+local VERSION = 16
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -610,8 +610,9 @@ end
 
 -- What a kit was dropped on: the nearest other kit showing on screen, or
 -- the pin, within SNAP of the drop point. Returns its key (or "pin") and
--- whether it's part of the dock.
-local function DropTarget(key, cx, cy, pinX, pinY, centers)
+-- whether it's part of the dock. floatingOnly: only kits off the dock count
+-- (for the open kit carrying its dock, which is already sitting on it).
+local function DropTarget(key, cx, cy, pinX, pinY, centers, floatingOnly)
     local docked = DockedKeys()
     local best, bestD, bestDocked
     local function try(k, x, y, inDock)
@@ -620,7 +621,8 @@ local function DropTarget(key, cx, cy, pinX, pinY, centers)
         if d < SNAP and (not bestD or d < bestD) then best, bestD, bestDocked = k, d, inDock end
     end
     for k, other in pairs(D.kits) do
-        if k ~= key and Shown(k) and other.kit:IsVisible() then
+        if k ~= key and Shown(k) and other.kit:IsVisible()
+            and not (floatingOnly and InList(docked, k)) then
             local x, y
             if centers then
                 if centers[k] then x, y = centers[k][1], centers[k][2] end
@@ -632,7 +634,7 @@ local function DropTarget(key, cx, cy, pinX, pinY, centers)
     end
     local n = 0 -- the pin stands for the dock too (it hides while a kit is open on it)
     for _, k in ipairs(docked) do if k ~= key then n = n + 1 end end
-    if n > 0 and (pinX or D.pin) then
+    if n > 0 and not floatingOnly and (pinX or D.pin) then
         local x, y = pinX, pinY
         if not x then x, y = Center(D.pin) end
         try("pin", x, y, true)
@@ -741,7 +743,19 @@ end
 local function Resolve(drag, key, cx, cy)
     local s = drag.snap
     Restore(s, true)
-    return DropTarget(key, cx, cy, s.pin and s.pin[1], s.pin and s.pin[2], drag.centers)
+    return DropTarget(key, cx, cy, s.pin and s.pin[1], s.pin and s.pin[2], drag.centers, drag.group)
+end
+
+-- The open kit carrying its dock, over a floating kit: that kit joins the
+-- dock and stays exactly where it is, and the dock settles round it. Same
+-- as dropping a closed kit on it.
+local function JoinGroup(target, centers)
+    local tx, ty
+    if centers and centers[target] then tx, ty = centers[target][1], centers[target][2]
+    else tx, ty = Center(D.kits[target].kit) end
+    Pin()
+    DB().docked[target] = true
+    D.anchor = { key = target, x = tx, y = ty }
 end
 
 local function Signature()
@@ -755,13 +769,27 @@ end
 -- rearranges live: over another kit or the pin, the kits move into the
 -- shape they'd take with this one joined, leaving its spot free; away from
 -- everything, the dock closes up without it. Letting go settles it there.
+--
+-- Open kits merge just like closed ones: whatever's open on the dock being
+-- formed (the kit you're dragging, the kit you're over, or the one open on
+-- the pin) closes as soon as the merge shows, so the preview is exactly
+-- what you get on letting go, and nothing tucks away behind an open kit.
 local function Preview(key, cx, cy)
     local drag = D.dragging
-    if not drag or drag.group or not drag.snap or InCombatLockdown() then return end
+    if not drag or not drag.snap or InCombatLockdown() then return end
     local target, targetDocked = Resolve(drag, key, cx, cy)
     D.anchor = nil
     D.stay = nil
-    if target then
+    if drag.group then
+        -- Carrying the dock: only a floating kit is something to merge with.
+        -- Away from one, the dock just follows along and settles on letting go.
+        -- Until it first meets one, nothing moves: the dock is under it.
+        if not target and not drag.merged then return end
+        if target then
+            JoinGroup(target, drag.centers)
+            drag.merged = true
+        end
+    elseif target then
         Merge(key, target, targetDocked, cx, cy, drag.centers, true)
     else
         DB().docked[key] = false
@@ -775,7 +803,8 @@ local function Preview(key, cx, cy)
     local sig = Signature()
     if sig ~= drag.sig then
         drag.sig = sig
-        D.skip = key
+        D.skip = key -- before closing anything: a closing kit lays the dock out
+        if target then CloseOpen() end
         D.Layout()
         -- Away from everything: the dragged kit's slots go back to how they
         -- really are. A kit that was held for a merge preview and isn't any
@@ -855,25 +884,28 @@ function D.DragStop(key)
     local db = DB()
     local cx, cy = Center(kit)
     if not cx then
-        if drag.snap and not drag.group then Restore(drag.snap) end
+        if drag.snap then Restore(drag.snap) end
         D.Layout()
         return
     end
-    local target, targetDocked
-    if drag.group then
-        target, targetDocked = DropTarget(key, cx, cy)
-    else
-        target, targetDocked = Resolve(drag, key, cx, cy)
-    end
+    local target, targetDocked = Resolve(drag, key, cx, cy)
 
-    if drag.group then -- the open kit moved its dock: the pin follows it
-        Pin()
-        SetPinAt(cx, cy)
-        if target and not targetDocked then -- dropped on a floating kit: it joins
-            db.docked[target] = true
+    if drag.group then
+        if target then -- dropped on a floating kit: it joins, held where it is
+            JoinGroup(target, drag.centers)
             CloseOpen()
+            D.Layout()
+            D.anchor = nil
+            if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        else -- the open kit moved its dock: the pin follows it
+            Pin()
+            SetPinAt(cx, cy)
+            D.Layout()
         end
-        D.Layout()
+        if drag.held and drag.held ~= target then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
         return
     end
 
