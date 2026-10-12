@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 14
+local VERSION = 23
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -37,7 +37,7 @@ D.kits = D.kits or {}
 D.media = D.media or ("Interface\\AddOns\\" .. addonName .. "\\media\\")
 
 local ORDER = { "fak", "ck", "fk" }
-local SNAP = 70 -- how close (UI units) a kit must be dropped to snap
+local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and drop)
 -- Docked and closed, each kit shrinks to this size (before the kit's own
 -- Size setting), so two or three together take about the room of one --
 -- unless "Full-size kits when docked" is on (KitDockDB.fullSize).
@@ -253,9 +253,84 @@ local function Glide(kit, bx, by, bscale)
     kit.dockGrow:SetScaleTo(1, 1)
     kit.dockAG:Play()
 end
--- The kits use it too (KeepOnScreen), so a free kit nudged in from the edge
--- slides the same way a docked one does.
-D.Glide = Glide
+
+-- Kit buttons glide by being moved for real, a little each frame, rather
+-- than with an animation: a new layout part-way through (the live merge
+-- preview makes them often) then starts from wherever the kit actually is
+-- on screen, so nothing snaps back to the old spot or jumps ahead.
+local tweens = {}
+local tweener = CreateFrame("Frame")
+tweener:Hide()
+D.tweener = tweener -- (for testing)
+
+local function Smooth(t) return t * t * (3 - 2 * t) end
+
+local function TweenApply(kit, tw, k)
+    local s = tw.ss + (tw.es - tw.ss) * k
+    local x = tw.sx + (tw.ex - tw.sx) * k
+    local y = tw.sy + (tw.ey - tw.sy) * k
+    kit:SetScale(s)
+    local own = s * tw.parentEff / UIParent:GetEffectiveScale() -- UIParent units per kit unit
+    kit:ClearAllPoints()
+    kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / own, y / own)
+end
+
+local function TweenFinish(kit, tw)
+    tweens[kit] = nil
+    kit:SetScale(tw.es)
+    kit:ClearAllPoints()
+    kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
+end
+
+-- Stop a kit's glide where it should end (before something else moves it,
+-- or when combat starts and frames can't move).
+local function StopTween(kit)
+    local tw = tweens[kit]
+    if tw then TweenFinish(kit, tw) end
+end
+D.StopTween = StopTween
+
+tweener:SetScript("OnUpdate", function(self, dt)
+    local any = false
+    for kit, tw in pairs(tweens) do
+        tw.t = tw.t + dt
+        if tw.t >= GLIDE then
+            TweenFinish(kit, tw)
+        else
+            TweenApply(kit, tw, Smooth(tw.t / GLIDE))
+            any = true
+        end
+    end
+    if not any and not next(tweens) then self:Hide() end
+end)
+
+-- The kit has just been put where it ends up (anchor and scale); glide it
+-- there from bx, by (in its old own units) at old effective scale bscale.
+local function KitGlide(kit, bx, by, bscale)
+    if not bx or not kit:IsShown() or InCombatLockdown() then return end
+    local ui = UIParent:GetEffectiveScale()
+    local ex, ey = Center(kit)
+    if not ex then return end
+    local es = kit:GetScale()
+    local parentEff = kit:GetEffectiveScale() / es
+    local sx, sy, ss = bx * bscale / ui, by * bscale / ui, bscale / parentEff
+    if math.abs(sx - ex) < 0.5 and math.abs(sy - ey) < 0.5 and math.abs(ss - es) < 0.001 then return end
+    local p, rel, rp, x, y = kit:GetPoint(1)
+    if kit.dockAG then kit.dockAG:Stop() end
+    tweens[kit] = { t = 0, sx = sx, sy = sy, ss = ss, ex = ex, ey = ey, es = es, parentEff = parentEff,
+        p = p, rel = rel, rp = rp, x = x, y = y }
+    TweenApply(kit, tweens[kit], 0)
+    tweener:Show()
+end
+
+-- The kits use it too (KeepOnScreen, and for their pinned slots), so a free
+-- kit nudged in from the edge slides the same way a docked one does.
+D.Glide = function(frame, bx, by, bscale)
+    for _, api in pairs(D.kits) do
+        if api.kit == frame then return KitGlide(frame, bx, by, bscale) end
+    end
+    return Glide(frame, bx, by, bscale)
+end
 
 -- Each kit's own Size setting, times the shrink while docked and closed.
 -- Tells the kit (Compact) so it can hide extras that sit around its button.
@@ -283,6 +358,17 @@ function D.IsCompact(key)
     return api and api.compact or false
 end
 
+-- How big a docked kit is on screen (UIParent units) in a dock of n.
+local function DockedSize(api, n, open)
+    local kit = api.kit
+    if n > 1 and not open and not DB().fullSize then
+        return (api.UiScale and api.UiScale() or 1) * COMPACT
+    end
+    return kit:GetWidth() * (api.BaseScale and api.BaseScale() or 1)
+end
+
+-- D.skip: the kit being dragged during a live merge preview. Layout leaves
+-- it alone (it's under the cursor) but still keeps its place in the dock.
 function D.Layout()
     if busy then return end
     if InCombatLockdown() then D.pending = true return end
@@ -292,18 +378,40 @@ function D.Layout()
     local keys = DockedKeys()
     local pin = Pin()
 
+    -- Where every kit is on screen right now, before anything moves (moving
+    -- the pin moves the kits on it), so each glides from where it really was.
+    local before = {}
+    for key, api in pairs(D.kits) do
+        local kit = api.kit
+        if key ~= D.skip and kit:IsShown() then
+            local x, y = kit:GetCenter()
+            if x then before[key] = { x, y, kit:GetEffectiveScale() } end
+        end
+    end
+
     -- Floating kits: their own saved spots and size, never tucked. One that
     -- was on the pin a moment ago glides to its spot like a docked kit would.
     for key, api in pairs(D.kits) do
-        if not InList(keys, key) then
+        if not InList(keys, key) and key ~= D.skip and D.stay and D.stay[key] then
+            -- Out of the dock only for a preview: stays put, as it is.
             local kit = api.kit
+            StopTween(kit)
+            local x, y = kit:GetCenter()
+            if x then
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+            end
+        elseif not InList(keys, key) and key ~= D.skip then
+            local kit = api.kit
+            local b = before[key]
             local bx, by, bs
-            if kit:IsShown() then bx, by = kit:GetCenter() bs = kit:GetEffectiveScale() end
+            if b then bx, by, bs = b[1], b[2], b[3] end
+            StopTween(kit)
             if api.BeginMove then api.BeginMove() end
             SetCompact(api, false)
             api.Tuck(false)
             api.PlaceFree()
-            Glide(kit, bx, by, bs)
+            KitGlide(kit, bx, by, bs)
             if api.EndMove then api.EndMove() end
         end
     end
@@ -347,13 +455,16 @@ function D.Layout()
     -- Where each docked kit is now, so it can glide to its new spot (and
     -- where its pinned slots are: BeginMove / EndMove let the kit slide them
     -- along instead of them jumping while the button glides).
-    local before = {}
+    -- While previewing a merge into a floating kit, that kit is held: not
+    -- moved, not resized, just its slots re-arranged; the pin and the rest
+    -- go around it.
+    local hold = D.skip and D.anchor and D.anchor.key or nil
     for _, k in ipairs(keys) do
         local api = D.kits[k]
-        local kit = api.kit
-        local x, y = kit:GetCenter()
-        if x and kit:IsShown() then before[k] = { x, y, kit:GetEffectiveScale() } end
-        if api.BeginMove then api.BeginMove() end
+        if k ~= D.skip and k ~= hold then
+            StopTween(api.kit)
+            if api.BeginMove then api.BeginMove() end
+        end
     end
 
     local n = #keys
@@ -366,15 +477,42 @@ function D.Layout()
     local size = 0
     for i, k in ipairs(keys) do
         local api = D.kits[k]
-        SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
-        local kit = api.kit
-        size = math.max(size, kit:GetWidth() * kit:GetScale())
+        if k == D.skip or k == hold then
+            -- (the held kit keeps its real size, so the pin sits clear of it)
+            size = math.max(size, k == hold and api.kit:GetWidth() * api.kit:GetScale() or DockedSize(api, n, false))
+            -- Its slots take the shape they'd have docked here (rings round
+            -- its button in its slice), without resizing it under the cursor.
+            if api.Compact then
+                if api.BeginMove then api.BeginMove() end -- its slots glide to the new shape
+                if n > 1 then api.Compact(true, angles[i], n == 2 and 170 or 115)
+                else api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+                if api.EndMove then api.EndMove() end
+            end
+        else
+            SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
+            local kit = api.kit
+            size = math.max(size, kit:GetWidth() * kit:GetScale())
+        end
     end
     local r = n == 2 and size * 0.55 or size * 0.66
+
+    -- Two floating kits merging: the one you dropped onto (or are hovering
+    -- over) is held exactly where it was, and the pin goes wherever that
+    -- needs it, whatever sizes and spacing the dock settles on.
+    local anchor = D.anchor
+    if anchor and n > 1 then
+        local ai = InList(keys, anchor.key)
+        if ai and keys[ai] ~= openKey then
+            local a = math.rad(angles[ai])
+            SetPinAt(anchor.x - r * math.cos(a), anchor.y - r * math.sin(a))
+        end
+    end
 
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
+        if k == D.skip or k == hold then -- under the cursor, or held where it is
+        else
         local ks = kit:GetScale()
         local dx, dy = 0, 0
         if n > 1 and k ~= openKey then
@@ -385,8 +523,9 @@ function D.Layout()
         kit:SetPoint("CENTER", pin, "CENTER", dx / ks, dy / ks)
         api.Tuck(openKey ~= nil and k ~= openKey)
         local b = before[k]
-        if b and not (openKey ~= nil and k ~= openKey) then Glide(kit, b[1], b[2], b[3]) end
+        if b and not (openKey ~= nil and k ~= openKey) then KitGlide(kit, b[1], b[2], b[3]) end
         if api.EndMove then api.EndMove() end
+        end
     end
     pin:SetShown(n >= 2 and not openKey and not D.pinCombatHidden)
     busy = false
@@ -448,6 +587,7 @@ end
 local function Release(key)
     local api = D.kits[key]
     local kit = api.kit
+    StopTween(kit)
     local x, y = Center(kit)
     DB().docked[key] = false
     SetCompact(api, false)
@@ -471,7 +611,7 @@ end
 -- What a kit was dropped on: the nearest other kit showing on screen, or
 -- the pin, within SNAP of the drop point. Returns its key (or "pin") and
 -- whether it's part of the dock.
-local function DropTarget(key, cx, cy)
+local function DropTarget(key, cx, cy, pinX, pinY, centers)
     local docked = DockedKeys()
     local best, bestD, bestDocked
     local function try(k, x, y, inDock)
@@ -481,81 +621,70 @@ local function DropTarget(key, cx, cy)
     end
     for k, other in pairs(D.kits) do
         if k ~= key and Shown(k) and other.kit:IsVisible() then
-            local x, y = Center(other.kit)
+            local x, y
+            if centers then
+                if centers[k] then x, y = centers[k][1], centers[k][2] end
+            else
+                x, y = Center(other.kit)
+            end
             try(k, x, y, InList(docked, k) ~= nil)
         end
     end
     local n = 0 -- the pin stands for the dock too (it hides while a kit is open on it)
     for _, k in ipairs(docked) do if k ~= key then n = n + 1 end end
-    if n > 0 and D.pin then
-        local x, y = Center(D.pin)
+    if n > 0 and (pinX or D.pin) then
+        local x, y = pinX, pinY
+        if not x then x, y = Center(D.pin) end
         try("pin", x, y, true)
     end
     return best, bestDocked
 end
 
--- Called from a kit's OnDragStart. The kit open on the pin carries its
--- whole dock with it; any other kit moves on its own.
-function D.DragStart(key)
-    if InCombatLockdown() then return end
-    local api = D.kits[key]
-    local kit = api.kit
-    -- Lift the kit off the pin at the same spot so it can move freely.
-    local x, y = kit:GetCenter()
-    if x then
-        kit:ClearAllPoints()
-        kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-    end
-    kit:StartMoving()
-    D.dragging = { key = key, group = D.IsDocked(key) and api.IsOpen() }
-end
-
--- Called from a kit's OnDragStop.
-function D.DragStop(key)
-    local drag = D.dragging
-    D.dragging = nil
-    local api = D.kits[key]
-    local kit = api.kit
-    kit:StopMovingOrSizing()
-    if not drag then return end
+-- Join key to target (another kit, or "pin" for the dock), as if dropped at
+-- cx, cy. Changes the saved dock (docked, order, side, pin); the caller lays
+-- it out. Used for the drop and for the live preview while dragging.
+local function Merge(key, target, targetDocked, cx, cy, centers, preview)
     local db = DB()
-    local cx, cy = Center(kit)
-    if not cx then D.Layout() return end
-    local target, targetDocked = DropTarget(key, cx, cy)
-
-    if drag.group then -- the open kit moved its dock: the pin follows it
-        Pin()
-        SetPinAt(cx, cy)
-        if target and not targetDocked then -- dropped on a floating kit: it joins
-            db.docked[target] = true
-            CloseOpen()
-        end
-        D.Layout()
-        return
-    end
-
-    if not target then -- dropped on nothing: float right here
-        Release(key)
-        D.Layout()
-        return
-    end
-
     if not targetDocked then
-        -- Dropped on a floating kit: the two start a dock between them, and
-        -- anything docked elsewhere lets go and floats where it is.
+        -- Dropped on a floating kit: the two start a dock, set so the kit
+        -- you dropped on stays where it is, and anything docked elsewhere
+        -- lets go and floats where it is.
         for _, k in ipairs(DockedKeys()) do
-            if k ~= key then Release(k) end
+            if k ~= key and k ~= target then
+                if preview then -- just a preview: leave it exactly where it is
+                    D.stay = D.stay or {}
+                    D.stay[k] = true
+                    DB().docked[k] = false
+                else
+                    Release(k)
+                end
+            end
         end
-        local tx, ty = Center(D.kits[target].kit)
+        local tx, ty
+        if centers and centers[target] then tx, ty = centers[target][1], centers[target][2]
+        else tx, ty = Center(D.kits[target].kit) end
+        local two = math.floor(math.deg(math.atan2(cy - ty, cx - tx)) / 90 + 0.5) * 90
+        local size = math.max(DockedSize(D.kits[key], 2), DockedSize(D.kits[target], 2))
+        local a = math.rad(two + 180) -- the target's side of the pin
+        -- Just noted: the layout moves the pin (after noting where every kit
+        -- is), and holds the target where it is.
         Pin()
-        SetPinAt((tx + cx) / 2, (ty + cy) / 2)
+        db.pin = { tx - size * 0.55 * math.cos(a), ty - size * 0.55 * math.sin(a) }
         db.docked[target] = true
+        db.docked[key] = true
+        db.two = two
+        D.anchor = { key = target, x = tx, y = ty }
+        local order = { key, target }
+        for _, k in ipairs(db.order) do if not InList(order, k) then order[#order + 1] = k end end
+        db.order = order
+        return
     end
 
     -- Join the dock at the pin, on the side (two kits) or corner (three)
     -- it was dropped on.
     db.docked[key] = true
-    local px, py = Center(Pin())
+    local px, py
+    if db.pin then px, py = db.pin[1], db.pin[2] else px, py = Center(Pin()) end
     local ang = math.deg(math.atan2(cy - py, cx - px))
     local keys = DockedKeys()
     if #keys == 2 then
@@ -579,8 +708,205 @@ function D.DragStop(key)
         for _, k in ipairs(db.order) do if not InList(keys, k) then keys[#keys + 1] = k end end
         db.order = keys
     end
+end
+
+-- The saved dock as it was when a drag began, so the live preview can try
+-- each arrangement and go back.
+local function Snapshot()
+    local db = DB()
+    local s = { docked = {}, order = {}, two = db.two, pin = db.pin and { db.pin[1], db.pin[2] } }
+    for k, v in pairs(db.docked) do s.docked[k] = v end
+    for i, k in ipairs(db.order) do s.order[i] = k end
+    return s
+end
+
+-- Puts the saved dock back. keepPin leaves the pin frame (and the kits on
+-- it) where the preview put them, so what's under the cursor can be read
+-- from what's on screen.
+local function Restore(s, keepPin)
+    local db = DB()
+    db.docked, db.order, db.two = {}, {}, s.two
+    for k, v in pairs(s.docked) do db.docked[k] = v end
+    for i, k in ipairs(s.order) do db.order[i] = k end
+    db.pin = s.pin and { s.pin[1], s.pin[2] } or nil
+    if db.pin and D.pin and not keepPin then SetPinAt(db.pin[1], db.pin[2]) end
+end
+
+-- What the dragged kit is over, judged against the dock and the kits as they
+-- were when the drag began (not where the preview has moved them, or the
+-- kit you're aiming at could slide along under the cursor), with
+-- the saved dock put back ready for Merge. The pin itself isn't moved here:
+-- the next layout does that, after noting where every kit is, so nothing on
+-- the pin jumps before it glides.
+local function Resolve(drag, key, cx, cy)
+    local s = drag.snap
+    Restore(s, true)
+    return DropTarget(key, cx, cy, s.pin and s.pin[1], s.pin and s.pin[2], drag.centers)
+end
+
+local function Signature()
+    local db = DB()
+    local p = db.pin or {}
+    return table.concat(DockedKeys(), ",") .. "|" .. tostring(db.two) .. "|"
+        .. math.floor((p[1] or 0) + 0.5) .. "," .. math.floor((p[2] or 0) + 0.5)
+end
+
+-- While you drag a kit (not the open one carrying its dock), the dock
+-- rearranges live: over another kit or the pin, the kits move into the
+-- shape they'd take with this one joined, leaving its spot free; away from
+-- everything, the dock closes up without it. Letting go settles it there.
+local function Preview(key, cx, cy)
+    local drag = D.dragging
+    if not drag or drag.group or not drag.snap or InCombatLockdown() then return end
+    local target, targetDocked = Resolve(drag, key, cx, cy)
+    D.anchor = nil
+    D.stay = nil
+    if target then
+        Merge(key, target, targetDocked, cx, cy, drag.centers, true)
+    else
+        DB().docked[key] = false
+        -- Pulled out of a pair: the kit left behind stays exactly where it is.
+        local left = DockedKeys()
+        if #left == 1 then
+            D.stay = { [left[1]] = true }
+            DB().docked[left[1]] = false
+        end
+    end
+    local sig = Signature()
+    if sig ~= drag.sig then
+        drag.sig = sig
+        D.skip = key
+        D.Layout()
+        -- Away from everything: the dragged kit's slots go back to how they
+        -- really are. A kit that was held for a merge preview and isn't any
+        -- more gets its own slots back too.
+        local api = D.kits[key]
+        if not target and api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        local held = D.anchor and D.anchor.key or nil
+        if drag.held and drag.held ~= held then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
+        drag.held = held
+    end
+end
+
+-- While a kit is dragged, a small watcher re-checks what's under it a few
+-- times a second and updates the live preview.
+local function Watcher()
+    if D.watch then return D.watch end
+    local w = CreateFrame("Frame")
+    w:Hide()
+    local elapsed = 0
+    w:SetScript("OnUpdate", function(self, dt)
+        elapsed = elapsed + dt
+        if elapsed < 0.05 then return end
+        elapsed = 0
+        local drag = D.dragging
+        local api = drag and D.kits[drag.key]
+        if not api then return end
+        local cx, cy = Center(api.kit)
+        if cx then Preview(drag.key, cx, cy) end
+    end)
+    D.watch = w
+    return w
+end
+
+-- Called from a kit's OnDragStart. The kit open on the pin carries its
+-- whole dock with it; any other kit moves on its own.
+function D.DragStart(key)
+    if InCombatLockdown() then return end
+    local api = D.kits[key]
+    local kit = api.kit
+    -- Lift the kit off the pin at the same spot so it can move freely.
+    StopTween(kit)
+    local x, y = kit:GetCenter()
+    if x then
+        kit:ClearAllPoints()
+        kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+    end
+    kit:StartMoving()
+    -- Where every other kit sits right now: the preview judges what you're
+    -- over against these, so its own rearranging doesn't move the target.
+    local centers = {}
+    for k, other in pairs(D.kits) do
+        if k ~= key then
+            StopTween(other.kit) -- where it's settling, not part-way there
+            local x, y = Center(other.kit)
+            if x then centers[k] = { x, y } end
+        end
+    end
+    D.dragging = { key = key, group = D.IsDocked(key) and api.IsOpen(), snap = Snapshot(), centers = centers }
+    if Installed() >= 2 then Watcher():Show() end
+end
+
+-- Called from a kit's OnDragStop.
+function D.DragStop(key)
+    local drag = D.dragging
+    D.dragging = nil
+    if D.watch then D.watch:Hide() end
+    D.skip = nil
+    D.anchor = nil
+    D.stay = nil
+    local api = D.kits[key]
+    local kit = api.kit
+    kit:StopMovingOrSizing()
+    if not drag then return end
+    local db = DB()
+    local cx, cy = Center(kit)
+    if not cx then
+        if drag.snap and not drag.group then Restore(drag.snap) end
+        D.Layout()
+        return
+    end
+    local target, targetDocked
+    if drag.group then
+        target, targetDocked = DropTarget(key, cx, cy)
+    else
+        target, targetDocked = Resolve(drag, key, cx, cy)
+    end
+
+    if drag.group then -- the open kit moved its dock: the pin follows it
+        Pin()
+        SetPinAt(cx, cy)
+        if target and not targetDocked then -- dropped on a floating kit: it joins
+            db.docked[target] = true
+            CloseOpen()
+        end
+        D.Layout()
+        return
+    end
+
+    if not target then -- dropped on nothing: float right here
+        Release(key)
+        -- A dock can't be one kit: the one left behind floats where it is.
+        local left = DockedKeys()
+        local lone, lb
+        if #left == 1 then
+            lone = D.kits[left[1]].kit
+            local x, y = lone:GetCenter()
+            if x then lb = { x, y, lone:GetEffectiveScale() } end
+            Release(left[1])
+        end
+        D.Layout()
+        if lone and lb then KitGlide(lone, lb[1], lb[2], lb[3]) end -- grows back in place
+        if drag.held then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
+        if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        return
+    end
+    D.anchor = nil
+    Merge(key, target, targetDocked, cx, cy, not drag.group and drag.centers or nil)
     CloseOpen()
     D.Layout()
+    D.anchor = nil
+    if drag.held and drag.held ~= target then
+        local h = D.kits[drag.held]
+        if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+    end
+    if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
 end
 
 ---------------------------------------------------------------------------
@@ -832,6 +1158,7 @@ watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
 watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
 watcher:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_DISABLED" then
+        for kit in pairs(tweens) do StopTween(kit) end
         if D.pin and PinHidesInCombat() then
             D.pinCombatHidden = true
             D.pin:Hide()
