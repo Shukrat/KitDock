@@ -178,8 +178,18 @@ local function Pin()
     p:SetScript("OnDragStart", function(self)
         if InCombatLockdown() then return end
         self:StartMoving()
+        local t = 0
+        self:SetScript("OnUpdate", function(f, dt) -- light the edge it would land on
+            t = t + dt
+            if t < 0.05 then return end
+            t = 0
+            local x, y = Center(f)
+            if x and D.EdgeGlow then D.EdgeGlow(D.NearEdge(x, y)) end
+        end)
     end)
     p:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+        if D.EdgeGlow then D.EdgeGlow(nil) end
         self:StopMovingOrSizing()
         SavePin()
         -- Dropped at a screen edge: the whole dock goes onto that edge.
@@ -565,6 +575,65 @@ local function JoinEdge(key, side, x, y)
 end
 
 D.NearEdge = NearEdge
+
+-- While a kit (or the pin) is dragged within reach of a screen edge, that
+-- edge lights up: a soft gold band fading inward, with a bright line on the
+-- edge itself. EdgeGlow(nil) clears it.
+local GLOW_DEPTH = 28
+local function Fade(t, vertical, fromA, toA)
+    local r, g, b = 1, 0.82, 0.2
+    if CreateColor and pcall(t.SetGradient, t, vertical and "VERTICAL" or "HORIZONTAL",
+        CreateColor(r, g, b, fromA), CreateColor(r, g, b, toA)) then
+        return
+    end
+    if t.SetGradientAlpha then
+        pcall(t.SetGradientAlpha, t, vertical and "VERTICAL" or "HORIZONTAL", r, g, b, fromA, r, g, b, toA)
+    end
+end
+function D.EdgeGlow(side)
+    local f = D.glow
+    if not side then
+        if f then f:Hide() f.side = nil end
+        return
+    end
+    if not f then
+        f = CreateFrame("Frame", nil, UIParent)
+        f:SetFrameStrata("HIGH")
+        f:EnableMouse(false)
+        f.band = f:CreateTexture(nil, "BACKGROUND")
+        f.band:SetAllPoints()
+        f.band:SetColorTexture(1, 1, 1, 1)
+        f.band:SetBlendMode("ADD")
+        f.line = f:CreateTexture(nil, "ARTWORK")
+        f.line:SetColorTexture(1, 0.82, 0.2, 0.9)
+        f.line:SetBlendMode("ADD")
+        D.glow = f
+    end
+    if f.side ~= side then
+        f.side = side
+        f:ClearAllPoints()
+        f.line:ClearAllPoints()
+        local vertical = side == "top" or side == "bottom" -- the band fades up or down
+        if side == "left" then
+            f:SetPoint("TOPLEFT") f:SetPoint("BOTTOMLEFT") f:SetWidth(GLOW_DEPTH)
+            f.line:SetPoint("TOPLEFT") f.line:SetPoint("BOTTOMLEFT") f.line:SetWidth(2)
+            Fade(f.band, false, 0.45, 0) -- HORIZONTAL runs left to right
+        elseif side == "right" then
+            f:SetPoint("TOPRIGHT") f:SetPoint("BOTTOMRIGHT") f:SetWidth(GLOW_DEPTH)
+            f.line:SetPoint("TOPRIGHT") f.line:SetPoint("BOTTOMRIGHT") f.line:SetWidth(2)
+            Fade(f.band, false, 0, 0.45)
+        elseif side == "top" then
+            f:SetPoint("TOPLEFT") f:SetPoint("TOPRIGHT") f:SetHeight(GLOW_DEPTH)
+            f.line:SetPoint("TOPLEFT") f.line:SetPoint("TOPRIGHT") f.line:SetHeight(2)
+            Fade(f.band, true, 0, 0.45) -- VERTICAL runs bottom to top
+        else
+            f:SetPoint("BOTTOMLEFT") f:SetPoint("BOTTOMRIGHT") f:SetHeight(GLOW_DEPTH)
+            f.line:SetPoint("BOTTOMLEFT") f.line:SetPoint("BOTTOMRIGHT") f.line:SetHeight(2)
+            Fade(f.band, true, 0.45, 0)
+        end
+    end
+    f:Show()
+end
 
 -- D.skip: the kit being dragged during a live merge preview. Layout leaves
 -- it alone (it's under the cursor) but still keeps its place in the dock.
@@ -1085,7 +1154,10 @@ local function Watcher()
         local api = drag and D.kits[drag.key]
         if not api then return end
         local cx, cy = Center(api.kit)
-        if cx then Preview(drag.key, cx, cy) end
+        if cx then
+            D.EdgeGlow(NearEdge(cx, cy))
+            Preview(drag.key, cx, cy)
+        end
     end)
     D.watch = w
     return w
@@ -1124,6 +1196,7 @@ function D.DragStop(key)
     local drag = D.dragging
     D.dragging = nil
     if D.watch then D.watch:Hide() end
+    D.EdgeGlow(nil)
     D.skip = nil
     D.anchor = nil
     D.stay = nil
