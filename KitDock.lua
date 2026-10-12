@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 22
+local VERSION = 23
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -37,7 +37,7 @@ D.kits = D.kits or {}
 D.media = D.media or ("Interface\\AddOns\\" .. addonName .. "\\media\\")
 
 local ORDER = { "fak", "ck", "fk" }
-local SNAP = 70 -- how close (UI units) a kit must be dropped to snap
+local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and drop)
 -- Docked and closed, each kit shrinks to this size (before the kit's own
 -- Size setting), so two or three together take about the room of one --
 -- unless "Full-size kits when docked" is on (KitDockDB.fullSize).
