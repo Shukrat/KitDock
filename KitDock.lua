@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 20
+local VERSION = 21
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -445,9 +445,13 @@ function D.Layout()
     -- Where each docked kit is now, so it can glide to its new spot (and
     -- where its pinned slots are: BeginMove / EndMove let the kit slide them
     -- along instead of them jumping while the button glides).
+    -- While previewing a merge into a floating kit, that kit is held: not
+    -- moved, not resized, just its slots re-arranged; the pin and the rest
+    -- go around it.
+    local hold = D.skip and D.anchor and D.anchor.key or nil
     for _, k in ipairs(keys) do
         local api = D.kits[k]
-        if k ~= D.skip then
+        if k ~= D.skip and k ~= hold then
             StopTween(api.kit)
             if api.BeginMove then api.BeginMove() end
         end
@@ -463,8 +467,9 @@ function D.Layout()
     local size = 0
     for i, k in ipairs(keys) do
         local api = D.kits[k]
-        if k == D.skip then
-            size = math.max(size, DockedSize(api, n, false))
+        if k == D.skip or k == hold then
+            -- (the held kit keeps its real size, so the pin sits clear of it)
+            size = math.max(size, k == hold and api.kit:GetWidth() * api.kit:GetScale() or DockedSize(api, n, false))
             -- Its slots take the shape they'd have docked here (rings round
             -- its button in its slice), without resizing it under the cursor.
             if api.Compact then
@@ -494,7 +499,7 @@ function D.Layout()
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
-        if k == D.skip then -- held under the cursor; its spot stays free
+        if k == D.skip or k == hold then -- under the cursor, or held where it is
         else
         local ks = kit:GetScale()
         local dx, dy = 0, 0
@@ -641,8 +646,10 @@ local function Merge(key, target, targetDocked, cx, cy, centers)
         local two = math.floor(math.deg(math.atan2(cy - ty, cx - tx)) / 90 + 0.5) * 90
         local size = math.max(DockedSize(D.kits[key], 2), DockedSize(D.kits[target], 2))
         local a = math.rad(two + 180) -- the target's side of the pin
+        -- Just noted: the layout moves the pin (after noting where every kit
+        -- is), and holds the target where it is.
         Pin()
-        SetPinAt(tx - size * 0.55 * math.cos(a), ty - size * 0.55 * math.sin(a))
+        db.pin = { tx - size * 0.55 * math.cos(a), ty - size * 0.55 * math.sin(a) }
         db.docked[target] = true
         db.docked[key] = true
         db.two = two
@@ -740,9 +747,16 @@ local function Preview(key, cx, cy)
         D.skip = key
         D.Layout()
         -- Away from everything: the dragged kit's slots go back to how they
-        -- really are.
+        -- really are. A kit that was held for a merge preview and isn't any
+        -- more gets its own slots back too.
         local api = D.kits[key]
         if not target and api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        local held = D.anchor and D.anchor.key or nil
+        if drag.held and drag.held ~= held then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
+        drag.held = held
     end
 end
 
@@ -834,6 +848,10 @@ function D.DragStop(key)
     if not target then -- dropped on nothing: float right here
         Release(key)
         D.Layout()
+        if drag.held then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
         if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
         return
     end
@@ -842,6 +860,10 @@ function D.DragStop(key)
     CloseOpen()
     D.Layout()
     D.anchor = nil
+    if drag.held and drag.held ~= target then
+        local h = D.kits[drag.held]
+        if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+    end
     if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
 end
 
