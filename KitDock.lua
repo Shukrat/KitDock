@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 20
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -479,6 +479,18 @@ function D.Layout()
     end
     local r = n == 2 and size * 0.55 or size * 0.66
 
+    -- Two floating kits merging: the one you dropped onto (or are hovering
+    -- over) is held exactly where it was, and the pin goes wherever that
+    -- needs it, whatever sizes and spacing the dock settles on.
+    local anchor = D.anchor
+    if anchor and n > 1 then
+        local ai = InList(keys, anchor.key)
+        if ai and keys[ai] ~= openKey then
+            local a = math.rad(angles[ai])
+            SetPinAt(anchor.x - r * math.cos(a), anchor.y - r * math.sin(a))
+        end
+    end
+
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
@@ -634,6 +646,7 @@ local function Merge(key, target, targetDocked, cx, cy, centers)
         db.docked[target] = true
         db.docked[key] = true
         db.two = two
+        D.anchor = { key = target, x = tx, y = ty }
         local order = { key, target }
         for _, k in ipairs(db.order) do if not InList(order, k) then order[#order + 1] = k end end
         db.order = order
@@ -719,6 +732,7 @@ local function Preview(key, cx, cy)
     local drag = D.dragging
     if not drag or drag.group or not drag.snap or InCombatLockdown() then return end
     local target, targetDocked = Resolve(drag, key, cx, cy)
+    D.anchor = nil
     if target then Merge(key, target, targetDocked, cx, cy, drag.centers) else DB().docked[key] = false end
     local sig = Signature()
     if sig ~= drag.sig then
@@ -787,6 +801,7 @@ function D.DragStop(key)
     D.dragging = nil
     if D.watch then D.watch:Hide() end
     D.skip = nil
+    D.anchor = nil
     local api = D.kits[key]
     local kit = api.kit
     kit:StopMovingOrSizing()
@@ -822,9 +837,11 @@ function D.DragStop(key)
         if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
         return
     end
+    D.anchor = nil
     Merge(key, target, targetDocked, cx, cy, not drag.group and drag.centers or nil)
     CloseOpen()
     D.Layout()
+    D.anchor = nil
     if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
 end
 
