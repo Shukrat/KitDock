@@ -402,10 +402,16 @@ end
 
 -- Tells a kit which edge it's on (or nil), so it lays its slots out in
 -- columns (or rows) toward the middle of the screen.
+-- The kit's slots glide into (or out of) the edge shape rather than jump:
+-- BeginMove / EndMove around it, which nest inside a layout's own pair.
 local function SetEdge(api, side)
     if api.edgeSide ~= side then
         api.edgeSide = side
-        if api.Edge then api.Edge(side) end
+        if api.Edge then
+            if api.BeginMove then api.BeginMove() end
+            api.Edge(side)
+            if api.EndMove then api.EndMove() end
+        end
     end
 end
 
