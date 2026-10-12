@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 14
+local VERSION = 15
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -494,6 +494,83 @@ local function DropTarget(key, cx, cy)
     return best, bestDocked
 end
 
+-- While a kit is dragged, a pulsing gold ring sits on whatever it would
+-- join if dropped there (another kit, or the pin for the dock), so you can
+-- see a merge coming before you let go.
+local function DropHint()
+    if D.hint then return D.hint end
+    local h = CreateFrame("Frame", "KitDockDropHint", UIParent)
+    h:SetFrameStrata("HIGH")
+    h:SetSize(80, 80)
+    h:Hide()
+    h.ring = h:CreateTexture(nil, "OVERLAY")
+    h.ring:SetAllPoints()
+    h.ring:SetTexture(D.media .. "glow_ring")
+    h.ring:SetBlendMode("ADD")
+    h.ring:SetVertexColor(1, 0.82, 0.3)
+    local ag = h:CreateAnimationGroup()
+    ag:SetLooping("BOUNCE")
+    local a = ag:CreateAnimation("Alpha")
+    a:SetFromAlpha(0.35)
+    a:SetToAlpha(1)
+    a:SetDuration(0.45)
+    a:SetSmoothing("IN_OUT")
+    h.pulse = ag
+    -- Follows the drag: checks what's under the kit a few times a second.
+    h.watch = CreateFrame("Frame")
+    h.watch:Hide()
+    local elapsed = 0
+    h.watch:SetScript("OnUpdate", function(self, dt)
+        elapsed = elapsed + dt
+        if elapsed < 0.05 then return end
+        elapsed = 0
+        local drag = D.dragging
+        local api = drag and D.kits[drag.key]
+        local cx, cy
+        if api then cx, cy = Center(api.kit) end
+        local target, targetDocked
+        if cx then target, targetDocked = DropTarget(drag.key, cx, cy) end
+        -- The open kit carrying its dock only merges with floating kits.
+        if drag and drag.group and targetDocked then target = nil end
+        local f, size
+        if target == "pin" then
+            f, size = D.pin, 90
+        elseif target then
+            local tk = D.kits[target].kit
+            f = tk
+            size = tk:GetWidth() * tk:GetEffectiveScale() / UIParent:GetEffectiveScale() * 1.75
+        end
+        local x, y
+        if f then x, y = Center(f) end
+        if not x then
+            h:Hide()
+            h.pulse:Stop()
+            h.target = nil
+            return
+        end
+        h:ClearAllPoints()
+        h:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+        h:SetSize(size, size)
+        if h.target ~= target then
+            h.target = target
+            h:Show()
+            h.pulse:Stop()
+            h.pulse:Play()
+        end
+    end)
+    D.hint = h
+    return h
+end
+
+local function StopHint()
+    local h = D.hint
+    if not h then return end
+    h.watch:Hide()
+    h:Hide()
+    h.pulse:Stop()
+    h.target = nil
+end
+
 -- Called from a kit's OnDragStart. The kit open on the pin carries its
 -- whole dock with it; any other kit moves on its own.
 function D.DragStart(key)
@@ -508,12 +585,14 @@ function D.DragStart(key)
     end
     kit:StartMoving()
     D.dragging = { key = key, group = D.IsDocked(key) and api.IsOpen() }
+    if Installed() >= 2 then DropHint().watch:Show() end
 end
 
 -- Called from a kit's OnDragStop.
 function D.DragStop(key)
     local drag = D.dragging
     D.dragging = nil
+    StopHint()
     local api = D.kits[key]
     local kit = api.kit
     kit:StopMovingOrSizing()
