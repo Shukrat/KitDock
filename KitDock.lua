@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 21
+local VERSION = 22
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -261,6 +261,7 @@ end
 local tweens = {}
 local tweener = CreateFrame("Frame")
 tweener:Hide()
+D.tweener = tweener -- (for testing)
 
 local function Smooth(t) return t * t * (3 - 2 * t) end
 
@@ -391,7 +392,16 @@ function D.Layout()
     -- Floating kits: their own saved spots and size, never tucked. One that
     -- was on the pin a moment ago glides to its spot like a docked kit would.
     for key, api in pairs(D.kits) do
-        if not InList(keys, key) and key ~= D.skip then
+        if not InList(keys, key) and key ~= D.skip and D.stay and D.stay[key] then
+            -- Out of the dock only for a preview: stays put, as it is.
+            local kit = api.kit
+            StopTween(kit)
+            local x, y = kit:GetCenter()
+            if x then
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+            end
+        elseif not InList(keys, key) and key ~= D.skip then
             local kit = api.kit
             local b = before[key]
             local bx, by, bs
@@ -473,8 +483,10 @@ function D.Layout()
             -- Its slots take the shape they'd have docked here (rings round
             -- its button in its slice), without resizing it under the cursor.
             if api.Compact then
+                if api.BeginMove then api.BeginMove() end -- its slots glide to the new shape
                 if n > 1 then api.Compact(true, angles[i], n == 2 and 170 or 115)
                 else api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+                if api.EndMove then api.EndMove() end
             end
         else
             SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
@@ -631,14 +643,22 @@ end
 -- Join key to target (another kit, or "pin" for the dock), as if dropped at
 -- cx, cy. Changes the saved dock (docked, order, side, pin); the caller lays
 -- it out. Used for the drop and for the live preview while dragging.
-local function Merge(key, target, targetDocked, cx, cy, centers)
+local function Merge(key, target, targetDocked, cx, cy, centers, preview)
     local db = DB()
     if not targetDocked then
         -- Dropped on a floating kit: the two start a dock, set so the kit
         -- you dropped on stays where it is, and anything docked elsewhere
         -- lets go and floats where it is.
         for _, k in ipairs(DockedKeys()) do
-            if k ~= key and k ~= target then Release(k) end
+            if k ~= key and k ~= target then
+                if preview then -- just a preview: leave it exactly where it is
+                    D.stay = D.stay or {}
+                    D.stay[k] = true
+                    DB().docked[k] = false
+                else
+                    Release(k)
+                end
+            end
         end
         local tx, ty
         if centers and centers[target] then tx, ty = centers[target][1], centers[target][2]
@@ -740,7 +760,18 @@ local function Preview(key, cx, cy)
     if not drag or drag.group or not drag.snap or InCombatLockdown() then return end
     local target, targetDocked = Resolve(drag, key, cx, cy)
     D.anchor = nil
-    if target then Merge(key, target, targetDocked, cx, cy, drag.centers) else DB().docked[key] = false end
+    D.stay = nil
+    if target then
+        Merge(key, target, targetDocked, cx, cy, drag.centers, true)
+    else
+        DB().docked[key] = false
+        -- Pulled out of a pair: the kit left behind stays exactly where it is.
+        local left = DockedKeys()
+        if #left == 1 then
+            D.stay = { [left[1]] = true }
+            DB().docked[left[1]] = false
+        end
+    end
     local sig = Signature()
     if sig ~= drag.sig then
         drag.sig = sig
@@ -816,6 +847,7 @@ function D.DragStop(key)
     if D.watch then D.watch:Hide() end
     D.skip = nil
     D.anchor = nil
+    D.stay = nil
     local api = D.kits[key]
     local kit = api.kit
     kit:StopMovingOrSizing()
@@ -847,7 +879,17 @@ function D.DragStop(key)
 
     if not target then -- dropped on nothing: float right here
         Release(key)
+        -- A dock can't be one kit: the one left behind floats where it is.
+        local left = DockedKeys()
+        local lone, lb
+        if #left == 1 then
+            lone = D.kits[left[1]].kit
+            local x, y = lone:GetCenter()
+            if x then lb = { x, y, lone:GetEffectiveScale() } end
+            Release(left[1])
+        end
         D.Layout()
+        if lone and lb then KitGlide(lone, lb[1], lb[2], lb[3]) end -- grows back in place
         if drag.held then
             local h = D.kits[drag.held]
             if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
