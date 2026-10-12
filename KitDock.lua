@@ -23,7 +23,7 @@ local addonName, ns = ...
 -- slides back in far enough for its slots to fit, docked or not.
 ---------------------------------------------------------------------------
 
-local VERSION = 15
+local VERSION = 16
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -80,22 +80,56 @@ end
 -- Docking only means something with two or more kits showing.
 function D.Active() return Count() >= 2 end
 
--- Docked kits, in their saved order.
+---------------------------------------------------------------------------
+-- Edge groups: kits snapped to a side of the screen. Saved as a list of
+-- groups, each { side = "left"|"right"|"top"|"bottom", start = along,
+-- keys = { ... } }: kits in one group stack along the edge and take turns
+-- opening; separate groups stay where they were put. "along" runs down the
+-- left and right edges (from the top) and across the top and bottom (from
+-- the left), in UIParent units.
+---------------------------------------------------------------------------
+
+local function Edges()
+    local db = DB()
+    db.edges = db.edges or {}
+    return db.edges
+end
+
+local function EdgeOf(key)
+    for _, g in ipairs(Edges()) do
+        local i = InList(g.keys, key)
+        if i then return g, i end
+    end
+end
+
+-- Which edge a kit is on, or nil.
+function D.EdgeSide(key)
+    local g = EdgeOf(key)
+    return g and g.side or nil
+end
+
+-- Kits on the pin, in their saved order (never ones on an edge).
 local function DockedKeys()
     local keys = {}
     if not D.Active() then return keys end
     local db = DB()
     for _, k in ipairs(db.order) do
-        if Shown(k) and db.docked[k] ~= false then keys[#keys + 1] = k end
+        if Shown(k) and db.docked[k] ~= false and not EdgeOf(k) then keys[#keys + 1] = k end
     end
     for _, k in ipairs(ORDER) do -- anything missing from a saved order
-        if Shown(k) and db.docked[k] ~= false and not InList(keys, k) then keys[#keys + 1] = k end
+        if Shown(k) and db.docked[k] ~= false and not EdgeOf(k) and not InList(keys, k) then keys[#keys + 1] = k end
     end
     return keys
 end
 
-function D.IsDocked(key)
+local function PinDocked(key)
     return InList(DockedKeys(), key) ~= nil
+end
+
+-- For the kits: placed by the dock (on the pin or on an edge), not by
+-- their own saved spot.
+function D.IsDocked(key)
+    return PinDocked(key) or EdgeOf(key) ~= nil
 end
 
 -- A frame's centre in UIParent units.
@@ -148,6 +182,10 @@ local function Pin()
     p:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         SavePin()
+        -- Dropped at a screen edge: the whole dock goes onto that edge.
+        local x, y = Center(self)
+        local side = x and D.NearEdge and D.NearEdge(x, y)
+        if side then D.PinToEdge(side) end
     end)
     p:SetScript("OnEnter", function(self)
         if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
@@ -352,6 +390,15 @@ local function SetCompact(api, on, angle, span)
     end
 end
 
+-- Tells a kit which edge it's on (or nil), so it lays its slots out in
+-- columns (or rows) toward the middle of the screen.
+local function SetEdge(api, side)
+    if api.edgeSide ~= side then
+        api.edgeSide = side
+        if api.Edge then api.Edge(side) end
+    end
+end
+
 -- Docked, closed and shrunk (the kit hides its timers and small buttons).
 function D.IsCompact(key)
     local api = D.kits[key]
@@ -366,6 +413,158 @@ local function DockedSize(api, n, open)
     end
     return kit:GetWidth() * (api.BaseScale and api.BaseScale() or 1)
 end
+
+-- Lay a kit's slots out for an edge, for the kits to call: cols is a list of
+-- columns from the edge inward, each a list of { frame, size } (sizes in
+-- the slots' own units), half is the kit button's half-size in those units.
+-- divAfter puts a gap for a divider after that column. Returns each frame's
+-- offset from the kit's centre, the divider's spot { x, y, len, vertical }
+-- (or nil), and how long the longest column is (along the edge).
+-- Left and right edges run their columns top to bottom; top and bottom
+-- edges run their rows left to right.
+local EDGE_VEC = { left = { 1, 0, 0, -1 }, right = { -1, 0, 0, -1 }, top = { 0, -1, 1, 0 }, bottom = { 0, 1, 1, 0 } }
+function D.EdgeArrange(side, half, cols, divAfter)
+    local v = EDGE_VEC[side] or EDGE_VEC.left
+    local GAP, COLGAP = 6, 10
+    local pos, cur, ext, divOut = {}, half + 10, 0, nil
+    for ci, col in ipairs(cols) do
+        if #col > 0 then
+            local w, L = 0, -GAP
+            for _, it in ipairs(col) do w = math.max(w, it.size) L = L + it.size + GAP end
+            local mid, a = cur + w / 2, -L / 2
+            for _, it in ipairs(col) do
+                local m = a + it.size / 2
+                pos[it.frame] = { v[1] * mid + v[3] * m, v[2] * mid + v[4] * m }
+                a = a + it.size + GAP
+            end
+            ext = math.max(ext, L)
+            cur = cur + w + COLGAP
+            if divAfter == ci then
+                divOut = cur + 1
+                cur = cur + 12
+            end
+        end
+    end
+    local div
+    if divOut and cur > divOut + 12 then -- only between two columns that are there
+        div = { v[1] * divOut, v[2] * divOut, ext + 16, side == "left" or side == "right" }
+    end
+    return pos, div, ext
+end
+
+local EDGE_REACH = 70 -- a kit's centre this close (UI units) to a screen edge snaps it there
+local EDGE_INSET = 4  -- gap between the screen edge and the kit button
+local EDGE_GAP = 12   -- between kits stacked in one group
+local EDGE_JOIN = 24  -- a kit dropped within this of a group's ends joins it
+
+local function Screen() return UIParent:GetWidth(), UIParent:GetHeight() end
+local function AlongLen(side)
+    local W, H = Screen()
+    return (side == "left" or side == "right") and H or W
+end
+local function AlongOf(side, x, y)
+    local W, H = Screen()
+    if side == "left" or side == "right" then return H - y end
+    return x
+end
+-- The kit button's half-size on screen at its own (not docked) size.
+local function KitHalf(api)
+    local kit = api.kit
+    local base = api.BaseScale and api.BaseScale() or kit:GetScale()
+    return kit:GetWidth() * base * (kit:GetEffectiveScale() / kit:GetScale()) / UIParent:GetEffectiveScale() / 2
+end
+-- Where a kit's centre goes for a spot along an edge (UI units).
+local function EdgePos(side, half, a)
+    local W, H = Screen()
+    local d = EDGE_INSET + half
+    if side == "left" then return d, H - a end
+    if side == "right" then return W - d, H - a end
+    if side == "top" then return a, H - d end
+    return a, d
+end
+-- The edge a point is close enough to snap to, if any.
+local function NearEdge(x, y)
+    local W, H = Screen()
+    local best, bd = nil, EDGE_REACH
+    for side, d in pairs({ left = x, right = W - x, top = H - y, bottom = y }) do
+        if d < bd then best, bd = side, d end
+    end
+    return best
+end
+-- How much room along the edge a kit takes (its strip closed, its columns
+-- open), from the kit, or just its button.
+local function EdgeExt(key, side, open)
+    local api = D.kits[key]
+    local e = api.EdgeExtent and api.EdgeExtent(side, open)
+    return math.max(e or 0, KitHalf(api) * 2)
+end
+-- Centres along the edge for a group's kits, with the open one's neighbours
+-- moved aside for it, kept on screen. Also returns the group's span.
+local function GroupCenters(g, openKey)
+    local c, ext, a = {}, {}, g.start
+    local keys = {}
+    for _, k in ipairs(g.keys) do if D.kits[k] and Shown(k) then keys[#keys + 1] = k end end
+    for _, k in ipairs(keys) do
+        ext[k] = EdgeExt(k, g.side, false)
+        c[k] = a + ext[k] / 2
+        a = a + ext[k] + EDGE_GAP
+    end
+    if openKey and InList(keys, openKey) then
+        local grow = (EdgeExt(openKey, g.side, true) - ext[openKey]) / 2
+        local after = false
+        for _, k in ipairs(keys) do
+            if k == openKey then after = true else c[k] = c[k] + (after and grow or -grow) end
+        end
+        ext[openKey] = ext[openKey] + grow * 2
+    end
+    if #keys == 0 then return c, g.start, g.start, keys end
+    local lo = c[keys[1]] - ext[keys[1]] / 2
+    local hi = c[keys[#keys]] + ext[keys[#keys]] / 2
+    local L, M = AlongLen(g.side), 8
+    local sh = hi > L - M and (L - M) - hi or 0
+    if lo + sh < M then sh = M - lo end
+    for _, k in ipairs(keys) do c[k] = c[k] + sh end
+    return c, lo + sh, hi + sh, keys
+end
+
+-- Take a kit out of its edge group; the rest stay where they are.
+local function LeaveEdge(key)
+    local g, i = EdgeOf(key)
+    if not g then return end
+    if i == 1 and #g.keys > 1 then g.start = g.start + EdgeExt(key, g.side, false) + EDGE_GAP end
+    table.remove(g.keys, i)
+    if #g.keys == 0 then
+        local groups = Edges()
+        table.remove(groups, InList(groups, g))
+    end
+end
+
+-- Put a kit on an edge at (x, y): into the group it's dropped against, or a
+-- new group of its own right there.
+local function JoinEdge(key, side, x, y)
+    LeaveEdge(key)
+    DB().docked[key] = false
+    local a = AlongOf(side, x, y)
+    local ext = EdgeExt(key, side, false)
+    for _, g in ipairs(Edges()) do
+        if g.side == side then
+            local c, lo, hi, keys = GroupCenters(g, nil)
+            if #keys > 0 and a + ext / 2 > lo - EDGE_JOIN and a - ext / 2 < hi + EDGE_JOIN then
+                local idx = #g.keys + 1
+                for i, k in ipairs(g.keys) do
+                    if c[k] and a < c[k] then idx = i break end
+                end
+                if idx == 1 then g.start = lo - ext - EDGE_GAP end
+                table.insert(g.keys, idx, key)
+                return
+            end
+        end
+    end
+    local L = AlongLen(side)
+    table.insert(Edges(), { side = side, start = math.max(8, math.min(L - 8 - ext, a - ext / 2)), keys = { key } })
+end
+
+D.NearEdge = NearEdge
 
 -- D.skip: the kit being dragged during a live merge preview. Layout leaves
 -- it alone (it's under the cursor) but still keeps its place in the dock.
@@ -401,7 +600,7 @@ function D.Layout()
                 kit:ClearAllPoints()
                 kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
             end
-        elseif not InList(keys, key) and key ~= D.skip then
+        elseif not InList(keys, key) and key ~= D.skip and not EdgeOf(key) then
             local kit = api.kit
             local b = before[key]
             local bx, by, bs
@@ -409,10 +608,59 @@ function D.Layout()
             StopTween(kit)
             if api.BeginMove then api.BeginMove() end
             SetCompact(api, false)
+            SetEdge(api, nil)
             api.Tuck(false)
             api.PlaceFree()
             KitGlide(kit, bx, by, bs)
             if api.EndMove then api.EndMove() end
+        end
+    end
+
+    -- Kits on the screen edges: each group stacked along its edge, the open
+    -- kit's neighbours moved aside for it. A kit in another group that the
+    -- open one would cover tucks away until it closes.
+    local spans = {}
+    for _, g in ipairs(Edges()) do
+        local openKey
+        for _, k in ipairs(g.keys) do
+            if D.kits[k] and Shown(k) and D.kits[k].IsOpen() then openKey = k end
+        end
+        local c, lo, hi, gkeys = GroupCenters(g, openKey)
+        if openKey then spans[#spans + 1] = { side = g.side, lo = lo, hi = hi, g = g } end
+        for _, k in ipairs(gkeys) do
+            local api = D.kits[k]
+            if k == D.skip then
+                SetEdge(api, g.side) -- under the cursor: just its slots take the edge shape
+            else
+                local kit = api.kit
+                StopTween(kit)
+                if api.BeginMove then api.BeginMove() end
+                SetCompact(api, false)
+                SetEdge(api, g.side)
+                local x, y = EdgePos(g.side, KitHalf(api), c[k])
+                local s = kit:GetEffectiveScale() / UIParent:GetEffectiveScale()
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
+                local b = before[k]
+                if b then KitGlide(kit, b[1], b[2], b[3]) end
+                if api.EndMove then api.EndMove() end
+            end
+        end
+    end
+    for _, g in ipairs(Edges()) do
+        for _, k in ipairs(g.keys) do
+            local api = D.kits[k]
+            if api and Shown(k) and k ~= D.skip then
+                local tuck = false
+                for _, sp in ipairs(spans) do
+                    if sp.g ~= g and sp.side == g.side then
+                        local c = GroupCenters(g, nil)
+                        local h = EdgeExt(k, g.side, false) / 2
+                        if c[k] and c[k] + h > sp.lo - 8 and c[k] - h < sp.hi + 8 then tuck = true end
+                    end
+                end
+                api.Tuck(tuck)
+            end
         end
     end
 
@@ -489,6 +737,7 @@ function D.Layout()
                 if api.EndMove then api.EndMove() end
             end
         else
+            SetEdge(api, nil)
             SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
             local kit = api.kit
             size = math.max(size, kit:GetWidth() * kit:GetScale())
@@ -554,6 +803,11 @@ end
 --             moves the kit, so it can glide its pinned slots along too
 --   HidesInCombat() (optional) true if the kit hides itself in combat; when
 --             every docked kit does, the pin hides in combat as well
+--   Edge(side) (optional) the kit is on a screen edge ("left", "right",
+--             "top", "bottom") or not (nil): lay its slots out in columns
+--             (or rows) toward the middle of the screen
+--   EdgeExtent(side, open) (optional) how much room (UI units) the kit
+--             takes along that edge, closed or open
 function D.Register(key, api)
     D.kits[key] = api
     QueueLayout()
@@ -565,9 +819,10 @@ end
 
 function D.Opening(key)
     if not D.IsDocked(key) or InCombatLockdown() then return end
-    for _, k in ipairs(DockedKeys()) do
+    local g = EdgeOf(key)
+    for _, k in ipairs(g and g.keys or DockedKeys()) do
         local api = D.kits[k]
-        if k ~= key and api.IsOpen() then api.Close() end
+        if k ~= key and api and api.IsOpen() then api.Close() end
     end
     D.Layout()
 end
@@ -714,9 +969,12 @@ end
 -- each arrangement and go back.
 local function Snapshot()
     local db = DB()
-    local s = { docked = {}, order = {}, two = db.two, pin = db.pin and { db.pin[1], db.pin[2] } }
+    local s = { docked = {}, order = {}, two = db.two, pin = db.pin and { db.pin[1], db.pin[2] }, edges = {} }
     for k, v in pairs(db.docked) do s.docked[k] = v end
     for i, k in ipairs(db.order) do s.order[i] = k end
+    for i, g in ipairs(Edges()) do
+        s.edges[i] = { side = g.side, start = g.start, keys = { unpack(g.keys) } }
+    end
     return s
 end
 
@@ -729,6 +987,10 @@ local function Restore(s, keepPin)
     for k, v in pairs(s.docked) do db.docked[k] = v end
     for i, k in ipairs(s.order) do db.order[i] = k end
     db.pin = s.pin and { s.pin[1], s.pin[2] } or nil
+    db.edges = {}
+    for i, g in ipairs(s.edges or {}) do
+        db.edges[i] = { side = g.side, start = g.start, keys = { unpack(g.keys) } }
+    end
     if db.pin and D.pin and not keepPin then SetPinAt(db.pin[1], db.pin[2]) end
 end
 
@@ -747,8 +1009,12 @@ end
 local function Signature()
     local db = DB()
     local p = db.pin or {}
+    local e = {}
+    for _, g in ipairs(Edges()) do
+        e[#e + 1] = g.side .. math.floor(g.start + 0.5) .. ":" .. table.concat(g.keys, ",")
+    end
     return table.concat(DockedKeys(), ",") .. "|" .. tostring(db.two) .. "|"
-        .. math.floor((p[1] or 0) + 0.5) .. "," .. math.floor((p[2] or 0) + 0.5)
+        .. math.floor((p[1] or 0) + 0.5) .. "," .. math.floor((p[2] or 0) + 0.5) .. "|" .. table.concat(e, ";")
 end
 
 -- While you drag a kit (not the open one carrying its dock), the dock
@@ -761,9 +1027,21 @@ local function Preview(key, cx, cy)
     local target, targetDocked = Resolve(drag, key, cx, cy)
     D.anchor = nil
     D.stay = nil
-    if target then
+    local side = NearEdge(cx, cy)
+    if side then
+        target = nil
+        JoinEdge(key, side, cx, cy)
+        -- Pulled out of a pair: the kit left behind stays exactly where it is.
+        local left = DockedKeys()
+        if #left == 1 then
+            D.stay = { [left[1]] = true }
+            DB().docked[left[1]] = false
+        end
+    elseif target then
+        LeaveEdge(key)
         Merge(key, target, targetDocked, cx, cy, drag.centers, true)
     else
+        LeaveEdge(key)
         DB().docked[key] = false
         -- Pulled out of a pair: the kit left behind stays exactly where it is.
         local left = DockedKeys()
@@ -782,6 +1060,7 @@ local function Preview(key, cx, cy)
         -- more gets its own slots back too.
         local api = D.kits[key]
         if not target and api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+        if not side then SetEdge(api, nil) end
         local held = D.anchor and D.anchor.key or nil
         if drag.held and drag.held ~= held then
             local h = D.kits[drag.held]
@@ -836,8 +1115,8 @@ function D.DragStart(key)
             if x then centers[k] = { x, y } end
         end
     end
-    D.dragging = { key = key, group = D.IsDocked(key) and api.IsOpen(), snap = Snapshot(), centers = centers }
-    if Installed() >= 2 then Watcher():Show() end
+    D.dragging = { key = key, group = PinDocked(key) and api.IsOpen(), snap = Snapshot(), centers = centers }
+    Watcher():Show()
 end
 
 -- Called from a kit's OnDragStop.
@@ -869,6 +1148,8 @@ function D.DragStop(key)
     if drag.group then -- the open kit moved its dock: the pin follows it
         Pin()
         SetPinAt(cx, cy)
+        local side = NearEdge(cx, cy)
+        if side then D.PinToEdge(side) return end
         if target and not targetDocked then -- dropped on a floating kit: it joins
             db.docked[target] = true
             CloseOpen()
@@ -876,6 +1157,28 @@ function D.DragStop(key)
         D.Layout()
         return
     end
+
+    local side = NearEdge(cx, cy)
+    if side then -- on a screen edge
+        JoinEdge(key, side, cx, cy)
+        SetCompact(api, false)
+        local left = DockedKeys()
+        local lone, lb
+        if #left == 1 then
+            lone = D.kits[left[1]].kit
+            local x, y = lone:GetCenter()
+            if x then lb = { x, y, lone:GetEffectiveScale() } end
+            Release(left[1])
+        end
+        D.Layout()
+        if lone and lb then KitGlide(lone, lb[1], lb[2], lb[3]) end
+        if drag.held then
+            local h = D.kits[drag.held]
+            if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
+        end
+        return
+    end
+    LeaveEdge(key)
 
     if not target then -- dropped on nothing: float right here
         Release(key)
@@ -913,10 +1216,37 @@ end
 -- Slash helpers (each addon offers "dock" and "flip")
 ---------------------------------------------------------------------------
 
+-- The whole pin dock onto an edge: its kits become one group there, in
+-- order along the edge, centred where the pin was.
+function D.PinToEdge(side)
+    if InCombatLockdown() then return end
+    local keys = DockedKeys()
+    if #keys == 0 then return end
+    local px, py = Center(Pin())
+    CloseOpen()
+    local list = {}
+    for _, k in ipairs(keys) do
+        local x, y = Center(D.kits[k].kit)
+        list[#list + 1] = { k = k, a = x and AlongOf(side, x, y) or 0 }
+    end
+    table.sort(list, function(a, b) return a.a < b.a end)
+    local total = 0
+    for i, e in ipairs(list) do
+        total = total + EdgeExt(e.k, side, false) + (i > 1 and EDGE_GAP or 0)
+        DB().docked[e.k] = false
+        LeaveEdge(e.k)
+    end
+    local g = { side = side, start = AlongOf(side, px, py) - total / 2, keys = {} }
+    for _, e in ipairs(list) do g.keys[#g.keys + 1] = e.k end
+    table.insert(Edges(), g)
+    D.Layout()
+end
+
 -- Dock every kit again, around the pin (or around this kit if there's none).
 function D.DockAll(fromKey)
     if InCombatLockdown() then return end
     local db = DB()
+    db.edges = {}
     local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
     for k in pairs(D.kits) do db.docked[k] = true end
     if not hadPin and fromKey and D.kits[fromKey] then
