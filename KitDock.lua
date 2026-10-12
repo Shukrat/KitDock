@@ -381,6 +381,12 @@ function D.Layout()
         local api = D.kits[k]
         if k == D.skip then
             size = math.max(size, DockedSize(api, n, false))
+            -- Its slots take the shape they'd have docked here (rings round
+            -- its button in its slice), without resizing it under the cursor.
+            if api.Compact then
+                if n > 1 then api.Compact(true, angles[i], n == 2 and 170 or 115)
+                else api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
+            end
         else
             SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
             local kit = api.kit
@@ -625,85 +631,32 @@ local function Preview(key, cx, cy)
         drag.sig = sig
         D.skip = key
         D.Layout()
+        -- Away from everything: the dragged kit's slots go back to how they
+        -- really are.
+        local api = D.kits[key]
+        if not target and api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
     end
 end
 
--- While a kit is dragged, a pulsing gold ring sits on whatever it would
--- join if dropped there (another kit, or the pin for the dock), so you can
--- see a merge coming before you let go.
-local function DropHint()
-    if D.hint then return D.hint end
-    local h = CreateFrame("Frame", "KitDockDropHint", UIParent)
-    h:SetFrameStrata("HIGH")
-    h:SetSize(80, 80)
-    h:Hide()
-    h.ring = h:CreateTexture(nil, "OVERLAY")
-    h.ring:SetAllPoints()
-    h.ring:SetTexture(D.media .. "glow_ring")
-    h.ring:SetBlendMode("ADD")
-    h.ring:SetVertexColor(1, 0.82, 0.3)
-    local ag = h:CreateAnimationGroup()
-    ag:SetLooping("BOUNCE")
-    local a = ag:CreateAnimation("Alpha")
-    a:SetFromAlpha(0.35)
-    a:SetToAlpha(1)
-    a:SetDuration(0.45)
-    a:SetSmoothing("IN_OUT")
-    h.pulse = ag
-    -- Follows the drag: checks what's under the kit a few times a second.
-    h.watch = CreateFrame("Frame")
-    h.watch:Hide()
+-- While a kit is dragged, a small watcher re-checks what's under it a few
+-- times a second and updates the live preview.
+local function Watcher()
+    if D.watch then return D.watch end
+    local w = CreateFrame("Frame")
+    w:Hide()
     local elapsed = 0
-    h.watch:SetScript("OnUpdate", function(self, dt)
+    w:SetScript("OnUpdate", function(self, dt)
         elapsed = elapsed + dt
         if elapsed < 0.05 then return end
         elapsed = 0
         local drag = D.dragging
         local api = drag and D.kits[drag.key]
-        local cx, cy
-        if api then cx, cy = Center(api.kit) end
+        if not api then return end
+        local cx, cy = Center(api.kit)
         if cx then Preview(drag.key, cx, cy) end
-        local target, targetDocked
-        if cx then target, targetDocked = DropTarget(drag.key, cx, cy) end
-        -- The open kit carrying its dock only merges with floating kits.
-        if drag and drag.group and targetDocked then target = nil end
-        local f, size
-        if target == "pin" then
-            f, size = D.pin, 90
-        elseif target then
-            local tk = D.kits[target].kit
-            f = tk
-            size = tk:GetWidth() * tk:GetEffectiveScale() / UIParent:GetEffectiveScale() * 1.75
-        end
-        local x, y
-        if f then x, y = Center(f) end
-        if not x then
-            h:Hide()
-            h.pulse:Stop()
-            h.target = nil
-            return
-        end
-        h:ClearAllPoints()
-        h:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
-        h:SetSize(size, size)
-        if h.target ~= target then
-            h.target = target
-            h:Show()
-            h.pulse:Stop()
-            h.pulse:Play()
-        end
     end)
-    D.hint = h
-    return h
-end
-
-local function StopHint()
-    local h = D.hint
-    if not h then return end
-    h.watch:Hide()
-    h:Hide()
-    h.pulse:Stop()
-    h.target = nil
+    D.watch = w
+    return w
 end
 
 -- Called from a kit's OnDragStart. The kit open on the pin carries its
@@ -720,14 +673,14 @@ function D.DragStart(key)
     end
     kit:StartMoving()
     D.dragging = { key = key, group = D.IsDocked(key) and api.IsOpen(), snap = Snapshot() }
-    if Installed() >= 2 then DropHint().watch:Show() end
+    if Installed() >= 2 then Watcher():Show() end
 end
 
 -- Called from a kit's OnDragStop.
 function D.DragStop(key)
     local drag = D.dragging
     D.dragging = nil
-    StopHint()
+    if D.watch then D.watch:Hide() end
     D.skip = nil
     local api = D.kits[key]
     local kit = api.kit
@@ -761,11 +714,13 @@ function D.DragStop(key)
     if not target then -- dropped on nothing: float right here
         Release(key)
         D.Layout()
+        if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
         return
     end
     Merge(key, target, targetDocked, cx, cy)
     CloseOpen()
     D.Layout()
+    if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
 end
 
 ---------------------------------------------------------------------------
