@@ -583,74 +583,49 @@ end
 D.NearEdge = NearEdge
 
 -- While a kit (or the pin) is dragged within reach of a screen edge, a
--- short stretch of that edge lights up where it would land: a soft gold
--- band fading inward, with a bright line on the edge itself, both fading
--- out at the ends. It follows along as you drag. EdgeGlow(nil) clears it.
-local GLOW_DEPTH = 26 -- how far in the band reaches
+-- short stretch of that edge lights up where it would land: a bright gold
+-- line on the edge itself, fading out at the ends. It follows along as you
+-- drag. EdgeGlow(nil) clears it.
 local GLOW_LEN = 180  -- how long the lit stretch is
 local GLOW_CAP = 50   -- of that, how much fades out at each end
-local GLOW_A, LINE_A = 0.45, 0.9
+local GLOW_THICK = 3
+local LINE_A = 0.95
 local function Fade(t, vertical, fromA, toA)
     local r, g, b = 1, 0.82, 0.2
     if CreateColor and pcall(t.SetGradient, t, vertical and "VERTICAL" or "HORIZONTAL",
         CreateColor(r, g, b, fromA), CreateColor(r, g, b, toA)) then
         return
     end
-    if t.SetGradientAlpha then
-        pcall(t.SetGradientAlpha, t, vertical and "VERTICAL" or "HORIZONTAL", r, g, b, fromA, r, g, b, toA)
+    if t.SetGradientAlpha and pcall(t.SetGradientAlpha, t, vertical and "VERTICAL" or "HORIZONTAL",
+        r, g, b, fromA, r, g, b, toA) then
+        return
     end
+    t:SetColorTexture(r, g, b, (fromA + toA) / 2) -- no gradients here: a plain, dimmer end
 end
-local function GlowTex(f, layer)
-    local t = f:CreateTexture(nil, layer)
+local function GlowTex(f)
+    local t = f:CreateTexture(nil, "ARTWORK")
     t:SetColorTexture(1, 1, 1, 1)
     t:SetBlendMode("ADD")
     return t
 end
--- Lays the glow's pieces out for a side: along the edge, a middle stretch
--- and two ends; the band fades inward in the middle and along the edge at
--- the ends (toward nothing), and so does the line.
+-- The line in three parts along the edge: a middle at full strength and
+-- two ends fading out (HORIZONTAL gradients run left to right, VERTICAL
+-- bottom to top).
 local function ShapeGlow(f, side)
     local vert = side == "left" or side == "right" -- the edge runs up and down
-    f:SetSize(vert and GLOW_DEPTH or GLOW_LEN, vert and GLOW_LEN or GLOW_DEPTH)
-    -- Anchor points: "lo" end (bottom or left), "hi" end (top or right), and
-    -- which side of the frame touches the screen edge.
-    local lo, hi = vert and "BOTTOM" or "LEFT", vert and "TOP" or "RIGHT"
-    local edge = side == "left" and "LEFT" or side == "right" and "RIGHT" or side == "top" and "TOP" or "BOTTOM"
-    local function Corner(a, b) -- e.g. BOTTOM + LEFT -> BOTTOMLEFT
-        if a == "TOP" or a == "BOTTOM" then return a .. b end
-        return b .. a
-    end
-    local inner = side == "left" and "RIGHT" or side == "right" and "LEFT" or side == "top" and "BOTTOM" or "TOP"
+    f:SetSize(vert and GLOW_THICK or GLOW_LEN, vert and GLOW_LEN or GLOW_THICK)
     for _, t in ipairs(f.pieces) do t:ClearAllPoints() end
+    local lo, hi = vert and "BOTTOM" or "LEFT", vert and "TOP" or "RIGHT"
     local function Along(d) return vert and 0 or d, vert and d or 0 end
-    -- Middle band
-    f.mid:SetPoint(Corner(lo, edge), f, Corner(lo, edge), Along(GLOW_CAP))
-    f.mid:SetPoint(Corner(hi, inner), f, Corner(hi, inner), Along(-GLOW_CAP))
-    -- Inward fade: HORIZONTAL runs left to right, VERTICAL bottom to top.
-    if side == "left" then Fade(f.mid, false, GLOW_A, 0)
-    elseif side == "right" then Fade(f.mid, false, 0, GLOW_A)
-    elseif side == "top" then Fade(f.mid, true, 0, GLOW_A)
-    else Fade(f.mid, true, GLOW_A, 0) end
-    -- Band ends: fade along the edge, toward the tips.
-    f.capLo:SetPoint(Corner(lo, edge), f, Corner(lo, edge))
-    f.capLo:SetPoint(Corner(hi, inner), f, Corner(lo, inner), Along(GLOW_CAP))
-    f.capHi:SetPoint(Corner(hi, edge), f, Corner(hi, edge))
-    f.capHi:SetPoint(Corner(lo, inner), f, Corner(hi, inner), Along(-GLOW_CAP))
-    Fade(f.capLo, vert, 0, GLOW_A * 0.5)
-    Fade(f.capHi, vert, GLOW_A * 0.5, 0)
-    -- The bright line on the edge, in the same three parts.
-    local thick = 2
-    -- A line from one spot along the edge (relative to the frame's lo or hi
-    -- end) to another.
-    local function Line(t, relA, offA, relB, offB)
-        t:SetPoint(Corner(lo, edge), f, Corner(relA, edge), Along(offA))
-        t:SetPoint(Corner(hi, edge), f, Corner(relB, edge), Along(offB))
-        if vert then t:SetWidth(thick) else t:SetHeight(thick) end
+    local function Span(t, relA, offA, relB, offB)
+        t:SetPoint(lo, f, relA, Along(offA))
+        t:SetPoint(hi, f, relB, Along(offB))
+        if vert then t:SetWidth(GLOW_THICK) else t:SetHeight(GLOW_THICK) end
     end
-    Line(f.line, lo, GLOW_CAP, hi, -GLOW_CAP)
+    Span(f.line, lo, GLOW_CAP, hi, -GLOW_CAP)
     f.line:SetColorTexture(1, 0.82, 0.2, LINE_A)
-    Line(f.lineLo, lo, 0, lo, GLOW_CAP)
-    Line(f.lineHi, hi, -GLOW_CAP, hi, 0)
+    Span(f.lineLo, lo, 0, lo, GLOW_CAP)
+    Span(f.lineHi, hi, -GLOW_CAP, hi, 0)
     Fade(f.lineLo, vert, 0, LINE_A)
     Fade(f.lineHi, vert, LINE_A, 0)
 end
@@ -664,9 +639,8 @@ function D.EdgeGlow(side, x, y)
         f = CreateFrame("Frame", nil, UIParent)
         f:SetFrameStrata("HIGH")
         f:EnableMouse(false)
-        f.mid, f.capLo, f.capHi = GlowTex(f, "BACKGROUND"), GlowTex(f, "BACKGROUND"), GlowTex(f, "BACKGROUND")
-        f.line, f.lineLo, f.lineHi = GlowTex(f, "ARTWORK"), GlowTex(f, "ARTWORK"), GlowTex(f, "ARTWORK")
-        f.pieces = { f.mid, f.capLo, f.capHi, f.line, f.lineLo, f.lineHi }
+        f.line, f.lineLo, f.lineHi = GlowTex(f), GlowTex(f), GlowTex(f)
+        f.pieces = { f.line, f.lineLo, f.lineHi }
         D.glow = f
     end
     if f.side ~= side then
@@ -678,10 +652,10 @@ function D.EdgeGlow(side, x, y)
     local half = GLOW_LEN / 2
     local cx, cy
     if side == "left" or side == "right" then
-        cx = side == "left" and GLOW_DEPTH / 2 or W - GLOW_DEPTH / 2
+        cx = side == "left" and GLOW_THICK / 2 or W - GLOW_THICK / 2
         cy = math.min(math.max(y, half), H - half)
     else
-        cy = side == "bottom" and GLOW_DEPTH / 2 or H - GLOW_DEPTH / 2
+        cy = side == "bottom" and GLOW_THICK / 2 or H - GLOW_THICK / 2
         cx = math.min(math.max(x, half), W - half)
     end
     f:ClearAllPoints()
