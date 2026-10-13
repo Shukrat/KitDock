@@ -38,10 +38,6 @@ D.media = D.media or ("Interface\\AddOns\\" .. addonName .. "\\media\\")
 
 local ORDER = { "fak", "ck", "fk" }
 local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and drop)
--- Docked and closed, each kit shrinks to this size (before the kit's own
--- Size setting), so two or three together take about the room of one --
--- unless "Full-size kits when docked" is on (KitDockDB.fullSize).
-local COMPACT = 34
 
 local function DB()
     KitDockDB = KitDockDB or {}
@@ -366,13 +362,13 @@ D.Glide = function(frame, bx, by, bscale)
     return Glide(frame, bx, by, bscale)
 end
 
--- Each kit's own Size setting, times the shrink while docked and closed.
--- Tells the kit (Compact) so it can hide extras that sit around its button.
+-- Docked kits keep their full size (each kit's own Size setting); docked
+-- and closed, the kit is told (Compact) so it can fan its pinned slots
+-- round the outside of its slice and hide extras that sit around its button.
 local function SetCompact(api, on, angle, span)
     local base = api.BaseScale and api.BaseScale() or 1
-    local ui = api.UiScale and api.UiScale() or base -- docked size follows the kit's Size, not its button-size slider
     local kit = api.kit
-    local scale = (on and not DB().fullSize) and ui * COMPACT / kit:GetWidth() or base
+    local scale = base
     local rescaled = math.abs(kit:GetScale() - scale) > 0.001
     if rescaled then kit:SetScale(scale) end
     angle, span = on and angle or nil, on and span or nil
@@ -410,9 +406,6 @@ end
 -- How big a docked kit is on screen (UIParent units) in a dock of n.
 local function DockedSize(api, n, open)
     local kit = api.kit
-    if n > 1 and not open and not DB().fullSize then
-        return (api.UiScale and api.UiScale() or 1) * COMPACT
-    end
     return kit:GetWidth() * (api.BaseScale and api.BaseScale() or 1)
 end
 
@@ -1479,30 +1472,6 @@ local function BuildMenu()
     f.title:SetPoint("TOPLEFT", 12, -10)
     f.title:SetText("Kits")
     f.rows = {}
-    -- Docking option: keep the kits at their normal size instead of shrinking them.
-    local okc, cb = pcall(CreateFrame, "CheckButton", nil, f, "UICheckButtonTemplate")
-    if not okc or not cb then cb = CreateFrame("CheckButton", nil, f) end
-    cb:SetSize(24, 24)
-    f.full = cb
-    f.fullLabel = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    f.fullLabel:SetPoint("LEFT", cb, "RIGHT", 2, 0)
-    f.fullLabel:SetText("Full-size kits when docked")
-    cb:SetScript("OnClick", function(self)
-        if InCombatLockdown() then
-            self:SetChecked(not self:GetChecked())
-            return
-        end
-        DB().fullSize = self:GetChecked() and true or false
-        D.Layout()
-        D.SettingsChanged()
-    end)
-    cb:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Full-size kits when docked")
-        GameTooltip:AddLine("Keep each docked kit at its normal size while it's closed, instead of shrinking it. Pinned slots still fan out around the outside.", 1, 1, 1, true)
-        GameTooltip:Show()
-    end)
-    cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
     f:Hide()
     tinsert(UISpecialFrames, "KitDockMenu") -- Escape closes it
     menu = f
@@ -1556,11 +1525,6 @@ local function FillMenu()
         end
     end
     for j = i + 1, #f.rows do f.rows[j].cb:Hide() f.rows[j].label:Hide() f.rows[j].gear:Hide() end
-    y = y - 6
-    f.full:ClearAllPoints()
-    f.full:SetPoint("TOPLEFT", f, "TOPLEFT", 8, y)
-    f.full:SetChecked(DB().fullSize and true or false)
-    y = y - 28
     f:SetSize(240, -y + 10)
 end
 
