@@ -689,6 +689,114 @@ function D.EdgeGlow(side, x, y)
     f:Show()
 end
 
+-- Kits sharing a spot on an edge are joined by a gold rail running along
+-- the edge behind them, with a pin stud between each pair: the edge's
+-- version of the pin they'd sit round on the dock. It follows the kits as
+-- they glide, and leaves out any that are tucked away or being dragged.
+local RAIL_THICK = 8
+local function RailFrame(i)
+    D.rails = D.rails or {}
+    local r = D.rails[i]
+    if r then return r end
+    r = CreateFrame("Frame", nil, UIParent)
+    r:SetFrameStrata("MEDIUM")
+    r:SetFrameLevel(2) -- under the kits (10) and their slots
+    r:EnableMouse(false)
+    r.back = r:CreateTexture(nil, "BACKGROUND")
+    r.back:SetAllPoints()
+    r.back:SetColorTexture(0.08, 0.06, 0.03, 0.85)
+    r.lineA = r:CreateTexture(nil, "BORDER")
+    r.lineB = r:CreateTexture(nil, "BORDER")
+    r.lineA:SetColorTexture(1, 0.82, 0.2, 0.9)
+    r.lineB:SetColorTexture(1, 0.82, 0.2, 0.9)
+    r.studs = {}
+    D.rails[i] = r
+    return r
+end
+local function Stud(r, j)
+    local t = r.studs[j]
+    if not t then
+        t = r:CreateTexture(nil, "ARTWORK")
+        t:SetTexture(D.media .. "pin_dot", nil, nil, "LINEAR")
+        t:SetSize(14, 14)
+        r.studs[j] = t
+    end
+    return t
+end
+local function UpdateRails()
+    local used = 0
+    for _, g in ipairs(Edges()) do
+        local pts = {}
+        for _, k in ipairs(g.keys) do
+            local api = D.kits[k]
+            if api and k ~= D.skip and Shown(k) and api.kit:IsVisible() then
+                local x, y = Center(api.kit)
+                if x then
+                    local W, H = UIParent:GetWidth(), UIParent:GetHeight()
+                    local d = g.side == "left" and x or g.side == "right" and W - x
+                        or g.side == "top" and H - y or y
+                    pts[#pts + 1] = { a = AlongOf(g.side, x, y), d = d }
+                end
+            end
+        end
+        if #pts >= 2 then
+            used = used + 1
+            local r = RailFrame(used)
+            table.sort(pts, function(p, q) return p.a < q.a end)
+            local d = math.huge
+            for _, pt in ipairs(pts) do d = math.min(d, pt.d) end -- through the smallest kit's middle
+            local a1, a2 = pts[1].a, pts[#pts].a
+            local len, mid = a2 - a1, (a1 + a2) / 2
+            local vert = g.side == "left" or g.side == "right"
+            local W, H = UIParent:GetWidth(), UIParent:GetHeight()
+            local function At(a) -- a spot on the rail, in UIParent units
+                if g.side == "left" then return d, H - a end
+                if g.side == "right" then return W - d, H - a end
+                if g.side == "top" then return a, H - d end
+                return a, d
+            end
+            local cx, cy = At(mid)
+            r:ClearAllPoints()
+            r:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, cy)
+            r:SetSize(vert and RAIL_THICK or len, vert and len or RAIL_THICK)
+            if r.vert ~= vert then
+                r.vert = vert
+                r.lineA:ClearAllPoints()
+                r.lineB:ClearAllPoints()
+                if vert then
+                    r.lineA:SetPoint("TOPLEFT") r.lineA:SetPoint("BOTTOMLEFT") r.lineA:SetWidth(1)
+                    r.lineB:SetPoint("TOPRIGHT") r.lineB:SetPoint("BOTTOMRIGHT") r.lineB:SetWidth(1)
+                else
+                    r.lineA:SetPoint("TOPLEFT") r.lineA:SetPoint("TOPRIGHT") r.lineA:SetHeight(1)
+                    r.lineB:SetPoint("BOTTOMLEFT") r.lineB:SetPoint("BOTTOMRIGHT") r.lineB:SetHeight(1)
+                end
+            end
+            for j = 1, #pts - 1 do
+                local t = Stud(r, j)
+                local sx, sy = At((pts[j].a + pts[j + 1].a) / 2)
+                t:ClearAllPoints()
+                t:SetPoint("CENTER", UIParent, "BOTTOMLEFT", sx, sy)
+                t:Show()
+            end
+            for j = #pts, #r.studs do r.studs[j]:Hide() end
+            r:Show()
+        end
+    end
+    for i = used + 1, #(D.rails or {}) do D.rails[i]:Hide() end
+    return used > 0
+end
+-- Keeps the rails on their kits (which glide), while there are any.
+local function Rails()
+    if not D.railDriver then
+        local f = CreateFrame("Frame")
+        f:SetScript("OnUpdate", function(self)
+            if not UpdateRails() then self:Hide() end
+        end)
+        D.railDriver = f
+    end
+    D.railDriver:Show()
+end
+
 -- D.skip: the kit being dragged during a live merge preview. Layout leaves
 -- it alone (it's under the cursor) but still keeps its place in the dock.
 function D.Layout()
@@ -696,6 +804,7 @@ function D.Layout()
     if InCombatLockdown() then D.pending = true return end
     D.pending = nil
     busy = true
+    Rails()
     local db = DB()
     local keys = DockedKeys()
     local pin = Pin()
