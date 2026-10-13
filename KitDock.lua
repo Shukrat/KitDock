@@ -1242,8 +1242,8 @@ function D.DragStart(key)
     Watcher():Show()
 end
 
--- Called from a kit's OnDragStop (below): settles the drop.
-local function DragStopNow(key)
+-- Called from a kit's OnDragStop.
+function D.DragStop(key)
     local drag = D.dragging
     D.dragging = nil
     if D.watch then D.watch:Hide() end
@@ -1335,16 +1335,6 @@ local function DragStopNow(key)
         if h and h.Compact then h.Compact(h.compact or false, h.compactAngle, h.compactSpan) end
     end
     if api.Compact then api.Compact(api.compact or false, api.compactAngle, api.compactSpan) end
-end
-
--- Called from a kit's OnDragStop. The game finishes moving the dragged
--- kit only after this handler returns, and can leave it where it was let
--- go instead of where the dock just put it (a small nudge off an edge
--- stayed off it). So the dock settles everything once more on the next
--- frame, gliding the kit from wherever the game left it.
-function D.DragStop(key)
-    DragStopNow(key)
-    QueueLayout()
 end
 
 ---------------------------------------------------------------------------
