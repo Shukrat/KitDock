@@ -82,7 +82,7 @@ function D.Active() return Count() >= 2 end
 
 ---------------------------------------------------------------------------
 -- Kits snapped to a side of the screen. Saved as a list of entries, each
--- { side = "left"|"right"|"top"|"bottom", start = along, keys = { key } }:
+-- { side = "left"|"right"|"top"|"bottom", at = along, keys = { key } }:
 -- one kit each, staying where it was put (kits on an edge never merge;
 -- they can overlap, and you move them apart yourself). "along" runs down
 -- the left and right edges (from the top) and across the top and bottom
@@ -498,29 +498,36 @@ local function EdgeExt(key, side, open)
     local e = api.EdgeExtent and api.EdgeExtent(side, open)
     return math.max(e or 0, KitHalf(api) * 2)
 end
--- Centres along the edge for an entry's kits (one now; older saves could hold
--- several), with the open one's neighbours
--- moved aside for it, kept on screen. Also returns the group's span.
+-- Where an edge entry's kits sit along the edge (their middles), kept on
+-- screen with what's showing (open, or closed with whatever's pinned) --
+-- that nudge is only for now, not saved. Also returns the span they take.
+-- An entry saves its kit's middle (at), so pinning or unpinning a slot
+-- grows or shrinks the strip around the kit without moving it. Entries
+-- saved before that (start: where the first kit's strip began, possibly
+-- several kits in a row) are worked out the old way.
 local function GroupCenters(g, openKey)
-    local c, ext, a = {}, {}, g.start
-    local keys = {}
+    local c, ext, keys = {}, {}, {}
     for _, k in ipairs(g.keys) do if D.kits[k] and Shown(k) then keys[#keys + 1] = k end end
-    for _, k in ipairs(keys) do
-        ext[k] = EdgeExt(k, g.side, false)
-        c[k] = a + ext[k] / 2
-        a = a + ext[k]
+    if #keys == 0 then
+        local a = g.at or g.start or 0
+        return c, a, a, keys
     end
-    if openKey and InList(keys, openKey) then
-        local grow = (EdgeExt(openKey, g.side, true) - ext[openKey]) / 2
-        local after = false
+    if g.at then
+        for _, k in ipairs(keys) do c[k] = g.at end
+    else
+        local a = g.start or 0
         for _, k in ipairs(keys) do
-            if k == openKey then after = true else c[k] = c[k] + (after and grow or -grow) end
+            local e = EdgeExt(k, g.side, false)
+            c[k] = a + e / 2
+            a = a + e
         end
-        ext[openKey] = ext[openKey] + grow * 2
     end
-    if #keys == 0 then return c, g.start, g.start, keys end
-    local lo = c[keys[1]] - ext[keys[1]] / 2
-    local hi = c[keys[#keys]] + ext[keys[#keys]] / 2
+    for _, k in ipairs(keys) do ext[k] = EdgeExt(k, g.side, k == openKey) end
+    local lo, hi = math.huge, -math.huge
+    for _, k in ipairs(keys) do
+        lo = math.min(lo, c[k] - ext[k] / 2)
+        hi = math.max(hi, c[k] + ext[k] / 2)
+    end
     local L, M = AlongLen(g.side), 8
     local sh = hi > L - M and (L - M) - hi or 0
     if lo + sh < M then sh = M - lo end
@@ -547,22 +554,25 @@ local function JoinEdge(key, side, x, y)
     local a = AlongOf(side, x, y)
     local ext = EdgeExt(key, side, false)
     local L = AlongLen(side)
-    table.insert(Edges(), { side = side, start = math.max(8, math.min(L - 8 - ext, a - ext / 2)), keys = { key } })
+    table.insert(Edges(), { side = side, at = math.max(8 + ext / 2, math.min(L - 8 - ext / 2, a)), keys = { key } })
 end
 
--- Saved entries from when kits on an edge could share a spot (several keys
--- in one): split up, each kit staying where it was.
+-- Older saved entries: several kits sharing a spot are split up, and a
+-- saved strip start becomes the kit's middle, each kit staying where it was.
 local function SplitEdges()
     local groups = Edges()
     for gi = #groups, 1, -1 do
         local g = groups[gi]
-        if #g.keys > 1 then
+        if #g.keys > 1 or not g.at then
             local c = GroupCenters(g, nil)
-            table.remove(groups, gi)
-            for _, k in ipairs(g.keys) do
-                local ext = D.kits[k] and EdgeExt(k, g.side, false) or 0
-                local at = c[k] or g.start
-                table.insert(groups, { side = g.side, start = at - ext / 2, keys = { k } })
+            -- (only kits loaded and showing have a spot worked out; wait for the rest)
+            local ready = true
+            for _, k in ipairs(g.keys) do if not c[k] then ready = false end end
+            if ready then
+                table.remove(groups, gi)
+                for _, k in ipairs(g.keys) do
+                    table.insert(groups, { side = g.side, at = c[k], keys = { k } })
+                end
             end
         end
     end
@@ -1055,7 +1065,7 @@ local function Snapshot()
     for k, v in pairs(db.docked) do s.docked[k] = v end
     for i, k in ipairs(db.order) do s.order[i] = k end
     for i, g in ipairs(Edges()) do
-        s.edges[i] = { side = g.side, start = g.start, keys = { unpack(g.keys) } }
+        s.edges[i] = { side = g.side, at = g.at, start = g.start, keys = { unpack(g.keys) } }
     end
     return s
 end
@@ -1071,7 +1081,7 @@ local function Restore(s, keepPin)
     db.pin = s.pin and { s.pin[1], s.pin[2] } or nil
     db.edges = {}
     for i, g in ipairs(s.edges or {}) do
-        db.edges[i] = { side = g.side, start = g.start, keys = { unpack(g.keys) } }
+        db.edges[i] = { side = g.side, at = g.at, start = g.start, keys = { unpack(g.keys) } }
     end
     if db.pin and D.pin and not keepPin then SetPinAt(db.pin[1], db.pin[2]) end
 end
@@ -1105,7 +1115,7 @@ local function Signature()
     local p = db.pin or {}
     local e = {}
     for _, g in ipairs(Edges()) do
-        e[#e + 1] = g.side .. math.floor(g.start + 0.5) .. ":" .. table.concat(g.keys, ",")
+        e[#e + 1] = g.side .. math.floor((g.at or g.start or 0) + 0.5) .. ":" .. table.concat(g.keys, ",")
     end
     return table.concat(DockedKeys(), ",") .. "|" .. tostring(db.two) .. "|"
         .. math.floor((p[1] or 0) + 0.5) .. "," .. math.floor((p[2] or 0) + 0.5) .. "|" .. table.concat(e, ";")
