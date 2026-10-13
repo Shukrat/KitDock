@@ -1029,6 +1029,7 @@ local function Merge(key, target, targetDocked, cx, cy, centers, preview)
 
     -- Join the dock at the pin, on the side (two kits) or corner (three)
     -- it was dropped on.
+    local wasIn = InList(DockedKeys(), key) ~= nil -- already on it (moving corners)
     db.docked[key] = true
     local px, py
     if db.pin then px, py = db.pin[1], db.pin[2] else px, py = Center(Pin()) end
@@ -1050,10 +1051,32 @@ local function Merge(key, target, targetDocked, cx, cy, centers, preview)
             local diff = math.abs(((ang - a) % 360 + 540) % 360 - 180)
             if diff < bestD then bestI, bestD = i, diff end
         end
-        local cur = InList(keys, key)
-        keys[cur], keys[bestI] = keys[bestI], keys[cur]
-        for _, k in ipairs(db.order) do if not InList(keys, k) then keys[#keys + 1] = k end end
-        db.order = keys
+        -- Where the others sit now: their corners if it's already three,
+        -- or their sides if it was two.
+        local function Diff(a, b) return math.abs(((a - b) % 360 + 540) % 360 - 180) end
+        local others, was = {}, {}
+        for i, k in ipairs(keys) do
+            if k ~= key then
+                others[#others + 1] = k
+                if wasIn then was[k] = angles[i] end
+            end
+        end
+        if not wasIn then
+            was[others[1]], was[others[2]] = db.two or 0, (db.two or 0) + 180
+        end
+        -- Each takes whichever free corner is nearest where it is, so
+        -- nothing crosses over to the far side.
+        local free = {}
+        for i = 1, 3 do if i ~= bestI then free[#free + 1] = i end end
+        local a, b = others[1], others[2]
+        if Diff(was[a], angles[free[1]]) + Diff(was[b], angles[free[2]])
+            > Diff(was[a], angles[free[2]]) + Diff(was[b], angles[free[1]]) then
+            a, b = b, a
+        end
+        local placed = {}
+        placed[bestI], placed[free[1]], placed[free[2]] = key, a, b
+        for _, k in ipairs(db.order) do if not InList(placed, k) then placed[#placed + 1] = k end end
+        db.order = placed
     end
 end
 
