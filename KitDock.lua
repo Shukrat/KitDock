@@ -689,42 +689,60 @@ function D.EdgeGlow(side, x, y)
     f:Show()
 end
 
--- Kits sharing a spot on an edge are joined by a gold rail running along
--- the edge behind them, with a pin stud between each pair: the edge's
--- version of the pin they'd sit round on the dock. It follows the kits as
+-- Kits sharing a spot on an edge are joined by the gold divider (the
+-- line with the diamond in the middle, as between Camping Kit's camp
+-- objects and its tent): one between each pair, running along the edge
+-- behind them from one kit's middle to the next. It follows the kits as
 -- they glide, and leaves out any that are tucked away or being dragged.
-local RAIL_THICK = 8
-local function RailFrame(i)
-    D.rails = D.rails or {}
-    local r = D.rails[i]
-    if r then return r end
-    r = CreateFrame("Frame", nil, UIParent)
-    r:SetFrameStrata("MEDIUM")
-    r:SetFrameLevel(2) -- under the kits (10) and their slots
-    r:EnableMouse(false)
-    r.back = r:CreateTexture(nil, "BACKGROUND")
-    r.back:SetAllPoints()
-    r.back:SetColorTexture(0.08, 0.06, 0.03, 0.85)
-    r.lineA = r:CreateTexture(nil, "BORDER")
-    r.lineB = r:CreateTexture(nil, "BORDER")
-    r.lineA:SetColorTexture(1, 0.82, 0.2, 0.9)
-    r.lineB:SetColorTexture(1, 0.82, 0.2, 0.9)
-    r.studs = {}
-    D.rails[i] = r
-    return r
-end
-local function Stud(r, j)
-    local t = r.studs[j]
-    if not t then
-        t = r:CreateTexture(nil, "ARTWORK")
-        t:SetTexture(D.media .. "pin_dot", nil, nil, "LINEAR")
-        t:SetSize(14, 14)
-        r.studs[j] = t
+-- The art is 512x32 with the diamond in its middle; drawn 16 high, the
+-- diamond keeps its shape and only the line either side stretches.
+local LINK_H = 16
+local DIAMOND = 0.08 -- of the art's width, centred
+local DIAMOND_W = 512 * DIAMOND * LINK_H / 32
+local function Link(i)
+    D.links = D.links or {}
+    local l = D.links[i]
+    if l then return l end
+    l = CreateFrame("Frame", nil, UIParent)
+    l:SetFrameStrata("MEDIUM")
+    l:SetFrameLevel(2) -- under the kits (10) and their slots
+    l:EnableMouse(false)
+    l.parts = {}
+    for j = 1, 3 do
+        local t = l:CreateTexture(nil, "ARTWORK")
+        t:SetTexture(D.media .. "divider", nil, nil, "LINEAR")
+        l.parts[j] = t
     end
-    return t
+    D.links[i] = l
+    return l
+end
+-- Lay a link's three parts (line, diamond, line) out across or down it.
+local CUTS = { { 0, 0.5 - DIAMOND / 2 }, { 0.5 - DIAMOND / 2, 0.5 + DIAMOND / 2 }, { 0.5 + DIAMOND / 2, 1 } }
+local function ShapeLink(l, vert, len)
+    if l.vert == vert and l.len == len then return end
+    l.vert, l.len = vert, len
+    l:SetSize(vert and LINK_H or len, vert and len or LINK_H)
+    local side = (len - DIAMOND_W) / 2
+    local sizes = { side, DIAMOND_W, side }
+    local at = 0
+    for j, t in ipairs(l.parts) do
+        local u0, u1 = CUTS[j][1], CUTS[j][2]
+        t:ClearAllPoints()
+        if vert then -- turned a quarter: the art's length runs down the screen
+            t:SetSize(LINK_H, sizes[j])
+            t:SetPoint("TOP", l, "TOP", 0, -at)
+            t:SetTexCoord(u0, 1, u1, 1, u0, 0, u1, 0)
+        else
+            t:SetSize(sizes[j], LINK_H)
+            t:SetPoint("LEFT", l, "LEFT", at, 0)
+            t:SetTexCoord(u0, u1, 0, 1)
+        end
+        at = at + sizes[j]
+    end
 end
 local function UpdateRails()
     local used = 0
+    local W, H = UIParent:GetWidth(), UIParent:GetHeight()
     for _, g in ipairs(Edges()) do
         local pts = {}
         for _, k in ipairs(g.keys) do
@@ -732,7 +750,6 @@ local function UpdateRails()
             if api and k ~= D.skip and Shown(k) and api.kit:IsVisible() then
                 local x, y = Center(api.kit)
                 if x then
-                    local W, H = UIParent:GetWidth(), UIParent:GetHeight()
                     local d = g.side == "left" and x or g.side == "right" and W - x
                         or g.side == "top" and H - y or y
                     pts[#pts + 1] = { a = AlongOf(g.side, x, y), d = d }
@@ -740,49 +757,28 @@ local function UpdateRails()
             end
         end
         if #pts >= 2 then
-            used = used + 1
-            local r = RailFrame(used)
             table.sort(pts, function(p, q) return p.a < q.a end)
             local d = math.huge
             for _, pt in ipairs(pts) do d = math.min(d, pt.d) end -- through the smallest kit's middle
-            local a1, a2 = pts[1].a, pts[#pts].a
-            local len, mid = a2 - a1, (a1 + a2) / 2
             local vert = g.side == "left" or g.side == "right"
-            local W, H = UIParent:GetWidth(), UIParent:GetHeight()
-            local function At(a) -- a spot on the rail, in UIParent units
-                if g.side == "left" then return d, H - a end
-                if g.side == "right" then return W - d, H - a end
-                if g.side == "top" then return a, H - d end
-                return a, d
-            end
-            local cx, cy = At(mid)
-            r:ClearAllPoints()
-            r:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, cy)
-            r:SetSize(vert and RAIL_THICK or len, vert and len or RAIL_THICK)
-            if r.vert ~= vert then
-                r.vert = vert
-                r.lineA:ClearAllPoints()
-                r.lineB:ClearAllPoints()
-                if vert then
-                    r.lineA:SetPoint("TOPLEFT") r.lineA:SetPoint("BOTTOMLEFT") r.lineA:SetWidth(1)
-                    r.lineB:SetPoint("TOPRIGHT") r.lineB:SetPoint("BOTTOMRIGHT") r.lineB:SetWidth(1)
-                else
-                    r.lineA:SetPoint("TOPLEFT") r.lineA:SetPoint("TOPRIGHT") r.lineA:SetHeight(1)
-                    r.lineB:SetPoint("BOTTOMLEFT") r.lineB:SetPoint("BOTTOMRIGHT") r.lineB:SetHeight(1)
-                end
-            end
             for j = 1, #pts - 1 do
-                local t = Stud(r, j)
-                local sx, sy = At((pts[j].a + pts[j + 1].a) / 2)
-                t:ClearAllPoints()
-                t:SetPoint("CENTER", UIParent, "BOTTOMLEFT", sx, sy)
-                t:Show()
+                used = used + 1
+                local l = Link(used)
+                local a1, a2 = pts[j].a, pts[j + 1].a
+                local mid = (a1 + a2) / 2
+                local x, y
+                if g.side == "left" then x, y = d, H - mid
+                elseif g.side == "right" then x, y = W - d, H - mid
+                elseif g.side == "top" then x, y = mid, H - d
+                else x, y = mid, d end
+                ShapeLink(l, vert, math.max(DIAMOND_W + 8, math.floor(a2 - a1 + 0.5)))
+                l:ClearAllPoints()
+                l:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
+                l:Show()
             end
-            for j = #pts, #r.studs do r.studs[j]:Hide() end
-            r:Show()
         end
     end
-    for i = used + 1, #(D.rails or {}) do D.rails[i]:Hide() end
+    for i = used + 1, #(D.links or {}) do D.links[i]:Hide() end
     return used > 0
 end
 -- Keeps the rails on their kits (which glide), while there are any.
