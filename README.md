@@ -4,6 +4,8 @@ The shared dock behind **First Aid Kit**, **Camping Kit** and **Fishing Kit** fo
 
 With two or more kits installed, their buttons snap together on a small gold pin, open one at a time, and share one minimap button. Every kit ships its own copy of `KitDock.lua`; the newest copy loaded wins (see `VERSION` at the top of the file), so a player can install any mix of kits.
 
+A kit can also register as **edges only** (`edgesOnly = true`, like Warlock Kit): it snaps to the screen edges and shows in the shared Kits menu, but never joins the pin and other kits never merge with it.
+
 ## How the kits use it
 
 Each kit's `.pkgmeta` pulls this repository into `Libs/KitDock` when a release is built, pinned to a tag:
@@ -25,7 +27,7 @@ and the kit's `.toc` loads `Libs\KitDock\KitDock.lua`.
 
 ## Local development (Windows)
 
-Clone this repository next to the kits (e.g. `C:\Users\Doug\Claude\KitDock`) and run `link-kits.bat` once. It links each kit's `Libs\KitDock` folder to this one with a directory junction, so all three kits use this copy in game and an edit here shows up in every kit.
+Clone this repository next to the kits (e.g. `C:\Users\Doug\Claude\KitDock`) and run `link-kits.bat` once. It links each kit's `Libs\KitDock` folder to this one with a directory junction, so every kit uses this copy in game and an edit here shows up in every kit.
 
 ## License
 
