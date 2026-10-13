@@ -1080,6 +1080,38 @@ local function Merge(key, target, targetDocked, cx, cy, centers, preview)
     end
 end
 
+-- Two kits left on the pin after a third comes off: they take the pair of
+-- opposite sides (left/right or top/bottom) nearest where each sits now
+-- (centers: where the kits were when the drag began), so neither crosses
+-- over to the other side.
+local function AngDiff(a, b) return math.abs(((a - b) % 360 + 540) % 360 - 180) end
+local function KeepSides(centers)
+    local db = DB()
+    local keys = DockedKeys()
+    if #keys ~= 2 or not db.pin then return end
+    local px, py = db.pin[1], db.pin[2]
+    local at = {}
+    for _, k in ipairs(keys) do
+        local c = centers and centers[k]
+        local x, y
+        if c then x, y = c[1], c[2] else x, y = Center(D.kits[k].kit) end
+        if not x then return end
+        at[k] = math.deg(math.atan2(y - py, x - px))
+    end
+    local best, bestCost
+    for _, two in ipairs({ 0, 90, 180, 270 }) do
+        for _, first in ipairs(keys) do
+            local second = first == keys[1] and keys[2] or keys[1]
+            local cost = AngDiff(at[first], two) + AngDiff(at[second], two + 180)
+            if not bestCost or cost < bestCost then best, bestCost = { two, first, second }, cost end
+        end
+    end
+    db.two = best[1]
+    local order = { best[2], best[3] }
+    for _, k in ipairs(db.order) do if not InList(order, k) then order[#order + 1] = k end end
+    db.order = order
+end
+
 -- The saved dock as it was when a drag began, so the live preview can try
 -- each arrangement and go back.
 local function Snapshot()
@@ -1179,6 +1211,7 @@ local function Preview(key, cx, cy)
             D.stay = { [left[1]] = true }
             DB().docked[left[1]] = false
         end
+        KeepSides(drag.centers) -- out of three: the two left keep their sides
     elseif target then
         LeaveEdge(key)
         Merge(key, target, targetDocked, cx, cy, drag.centers, true)
@@ -1191,6 +1224,7 @@ local function Preview(key, cx, cy)
             D.stay = { [left[1]] = true }
             DB().docked[left[1]] = false
         end
+        KeepSides(drag.centers) -- out of three: the two left keep their sides
     end
     local sig = Signature()
     if sig ~= drag.sig then
@@ -1310,6 +1344,7 @@ function D.DragStop(key)
     if side then -- on a screen edge
         JoinEdge(key, side, cx, cy)
         SetCompact(api, false)
+        KeepSides(drag.centers)
         local left = DockedKeys()
         local lone, lb
         if #left == 1 then
@@ -1330,6 +1365,7 @@ function D.DragStop(key)
 
     if not target then -- dropped on nothing: float right here
         Release(key)
+        KeepSides(drag.centers)
         -- A dock can't be one kit: the one left behind floats where it is.
         local left = DockedKeys()
         local lone, lb
