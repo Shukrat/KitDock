@@ -21,9 +21,13 @@ local addonName, ns = ...
 -- pulls in a floating kit it's dropped on. Any kit that was open closes on a
 -- merge so you can see the result. A kit dragged to the edge of the screen
 -- slides back in far enough for its slots to fit, docked or not.
+--
+-- A kit can register as edges only (edgesOnly in its Register call): it
+-- snaps to the screen edges like any kit but never joins the pin, and other
+-- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 16
+local VERSION = 17
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -61,9 +65,16 @@ local function Shown(k)
     return api and not (api.IsHidden and api.IsHidden())
 end
 
+-- A kit that never joins the pin (it only snaps to the screen edges).
+local function EdgesOnly(k)
+    local api = D.kits[k]
+    return api and api.edgesOnly and true or false
+end
+
+-- Kits that can go on the pin.
 local function Count()
     local n = 0
-    for k in pairs(D.kits) do if Shown(k) then n = n + 1 end end
+    for k in pairs(D.kits) do if Shown(k) and not EdgesOnly(k) then n = n + 1 end end
     return n
 end
 
@@ -110,10 +121,10 @@ local function DockedKeys()
     if not D.Active() then return keys end
     local db = DB()
     for _, k in ipairs(db.order) do
-        if Shown(k) and db.docked[k] ~= false and not EdgeOf(k) then keys[#keys + 1] = k end
+        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) then keys[#keys + 1] = k end
     end
     for _, k in ipairs(ORDER) do -- anything missing from a saved order
-        if Shown(k) and db.docked[k] ~= false and not EdgeOf(k) and not InList(keys, k) then keys[#keys + 1] = k end
+        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) and not InList(keys, k) then keys[#keys + 1] = k end
     end
     return keys
 end
@@ -891,6 +902,8 @@ end
 --             (or rows) toward the middle of the screen
 --   EdgeExtent(side, open) (optional) how much room (UI units) the kit
 --             takes along that edge, closed or open
+--   name      (optional) shown in the shared Kits menu
+--   edgesOnly (optional) never joins the pin; only snaps to screen edges
 function D.Register(key, api)
     D.kits[key] = api
     QueueLayout()
@@ -951,6 +964,7 @@ end
 -- whether it's part of the dock. floatingOnly: only kits off the dock count
 -- (for the open kit carrying its dock, which is already sitting on it).
 local function DropTarget(key, cx, cy, pinX, pinY, centers, floatingOnly)
+    if EdgesOnly(key) then return nil end -- it never merges with anything
     local docked = DockedKeys()
     local best, bestD, bestDocked
     local function try(k, x, y, inDock)
@@ -959,7 +973,7 @@ local function DropTarget(key, cx, cy, pinX, pinY, centers, floatingOnly)
         if d < SNAP and (not bestD or d < bestD) then best, bestD, bestDocked = k, d, inDock end
     end
     for k, other in pairs(D.kits) do
-        if k ~= key and Shown(k) and other.kit:IsVisible()
+        if k ~= key and Shown(k) and not EdgesOnly(k) and other.kit:IsVisible()
             and not (floatingOnly and InList(docked, k)) then
             local x, y
             if centers then
@@ -1397,13 +1411,32 @@ end
 function D.DockAll(fromKey)
     if InCombatLockdown() then return end
     local db = DB()
-    db.edges = {}
+    -- Edges-only kits keep their spots on the edges; everything else comes off.
+    local keep = {}
+    for _, g in ipairs(Edges()) do
+        local keys = {}
+        for _, k in ipairs(g.keys) do if EdgesOnly(k) then keys[#keys + 1] = k end end
+        if #keys > 0 then keep[#keep + 1] = { side = g.side, at = g.at, start = g.start, keys = keys } end
+    end
+    db.edges = keep
     local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
-    for k in pairs(D.kits) do db.docked[k] = true end
+    for k in pairs(D.kits) do if not EdgesOnly(k) then db.docked[k] = true end end
     if not hadPin and fromKey and D.kits[fromKey] then
         local x, y = Center(D.kits[fromKey].kit)
         if x then Pin() SetPinAt(x, y) end
     end
+    D.Layout()
+end
+
+-- Take a kit off the pin or its screen edge so it floats at its own saved
+-- spot (a kit's "reset").
+function D.Undock(key)
+    if InCombatLockdown() or not D.kits[key] then return end
+    LeaveEdge(key)
+    DB().docked[key] = false
+    local api = D.kits[key]
+    SetEdge(api, nil)
+    SetCompact(api, false)
     D.Layout()
 end
 
@@ -1478,11 +1511,22 @@ local function BuildMenu()
     return f
 end
 
+-- The kits in the menu: the docking kits first, then any others by name.
+local function MenuKeys()
+    local keys = {}
+    for _, k in ipairs(ORDER) do if D.kits[k] then keys[#keys + 1] = k end end
+    local rest = {}
+    for k in pairs(D.kits) do if not InList(ORDER, k) then rest[#rest + 1] = k end end
+    table.sort(rest, function(a, b) return (D.kits[a].name or a) < (D.kits[b].name or b) end)
+    for _, k in ipairs(rest) do keys[#keys + 1] = k end
+    return keys
+end
+
 local function FillMenu()
     local f = BuildMenu()
     local y = -30
     local i = 0
-    for _, k in ipairs(ORDER) do
+    for _, k in ipairs(MenuKeys()) do
         local api = D.kits[k]
         if api then
             i = i + 1
@@ -1504,7 +1548,7 @@ local function FillMenu()
             end
             row.cb:ClearAllPoints()
             row.cb:SetPoint("TOPLEFT", f, "TOPLEFT", 8, y)
-            row.label:SetText(NAMES[k] or k)
+            row.label:SetText(NAMES[k] or api.name or k)
             row.gear:ClearAllPoints()
             row.gear:SetPoint("RIGHT", f, "TOPRIGHT", -10, y - 12)
             row.cb:SetChecked(not (api.IsHidden and api.IsHidden()))
