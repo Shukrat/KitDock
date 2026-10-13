@@ -184,7 +184,7 @@ local function Pin()
             if t < 0.05 then return end
             t = 0
             local x, y = Center(f)
-            if x and D.EdgeGlow then D.EdgeGlow(D.NearEdge(x, y)) end
+            if x and D.EdgeGlow then D.EdgeGlow(D.NearEdge(x, y), x, y) end
         end)
     end)
     p:SetScript("OnDragStop", function(self)
@@ -582,10 +582,14 @@ end
 
 D.NearEdge = NearEdge
 
--- While a kit (or the pin) is dragged within reach of a screen edge, that
--- edge lights up: a soft gold band fading inward, with a bright line on the
--- edge itself. EdgeGlow(nil) clears it.
-local GLOW_DEPTH = 28
+-- While a kit (or the pin) is dragged within reach of a screen edge, a
+-- short stretch of that edge lights up where it would land: a soft gold
+-- band fading inward, with a bright line on the edge itself, both fading
+-- out at the ends. It follows along as you drag. EdgeGlow(nil) clears it.
+local GLOW_DEPTH = 26 -- how far in the band reaches
+local GLOW_LEN = 180  -- how long the lit stretch is
+local GLOW_CAP = 50   -- of that, how much fades out at each end
+local GLOW_A, LINE_A = 0.45, 0.9
 local function Fade(t, vertical, fromA, toA)
     local r, g, b = 1, 0.82, 0.2
     if CreateColor and pcall(t.SetGradient, t, vertical and "VERTICAL" or "HORIZONTAL",
@@ -596,48 +600,92 @@ local function Fade(t, vertical, fromA, toA)
         pcall(t.SetGradientAlpha, t, vertical and "VERTICAL" or "HORIZONTAL", r, g, b, fromA, r, g, b, toA)
     end
 end
-function D.EdgeGlow(side)
+local function GlowTex(f, layer)
+    local t = f:CreateTexture(nil, layer)
+    t:SetColorTexture(1, 1, 1, 1)
+    t:SetBlendMode("ADD")
+    return t
+end
+-- Lays the glow's pieces out for a side: along the edge, a middle stretch
+-- and two ends; the band fades inward in the middle and along the edge at
+-- the ends (toward nothing), and so does the line.
+local function ShapeGlow(f, side)
+    local vert = side == "left" or side == "right" -- the edge runs up and down
+    f:SetSize(vert and GLOW_DEPTH or GLOW_LEN, vert and GLOW_LEN or GLOW_DEPTH)
+    -- Anchor points: "lo" end (bottom or left), "hi" end (top or right), and
+    -- which side of the frame touches the screen edge.
+    local lo, hi = vert and "BOTTOM" or "LEFT", vert and "TOP" or "RIGHT"
+    local edge = side == "left" and "LEFT" or side == "right" and "RIGHT" or side == "top" and "TOP" or "BOTTOM"
+    local function Corner(a, b) -- e.g. BOTTOM + LEFT -> BOTTOMLEFT
+        if a == "TOP" or a == "BOTTOM" then return a .. b end
+        return b .. a
+    end
+    local inner = side == "left" and "RIGHT" or side == "right" and "LEFT" or side == "top" and "BOTTOM" or "TOP"
+    for _, t in ipairs(f.pieces) do t:ClearAllPoints() end
+    local function Along(d) return vert and 0 or d, vert and d or 0 end
+    -- Middle band
+    f.mid:SetPoint(Corner(lo, edge), f, Corner(lo, edge), Along(GLOW_CAP))
+    f.mid:SetPoint(Corner(hi, inner), f, Corner(hi, inner), Along(-GLOW_CAP))
+    -- Inward fade: HORIZONTAL runs left to right, VERTICAL bottom to top.
+    if side == "left" then Fade(f.mid, false, GLOW_A, 0)
+    elseif side == "right" then Fade(f.mid, false, 0, GLOW_A)
+    elseif side == "top" then Fade(f.mid, true, 0, GLOW_A)
+    else Fade(f.mid, true, GLOW_A, 0) end
+    -- Band ends: fade along the edge, toward the tips.
+    f.capLo:SetPoint(Corner(lo, edge), f, Corner(lo, edge))
+    f.capLo:SetPoint(Corner(hi, inner), f, Corner(lo, inner), Along(GLOW_CAP))
+    f.capHi:SetPoint(Corner(hi, edge), f, Corner(hi, edge))
+    f.capHi:SetPoint(Corner(lo, inner), f, Corner(hi, inner), Along(-GLOW_CAP))
+    Fade(f.capLo, vert, 0, GLOW_A * 0.5)
+    Fade(f.capHi, vert, GLOW_A * 0.5, 0)
+    -- The bright line on the edge, in the same three parts.
+    local thick = 2
+    -- A line from one spot along the edge (relative to the frame's lo or hi
+    -- end) to another.
+    local function Line(t, relA, offA, relB, offB)
+        t:SetPoint(Corner(lo, edge), f, Corner(relA, edge), Along(offA))
+        t:SetPoint(Corner(hi, edge), f, Corner(relB, edge), Along(offB))
+        if vert then t:SetWidth(thick) else t:SetHeight(thick) end
+    end
+    Line(f.line, lo, GLOW_CAP, hi, -GLOW_CAP)
+    f.line:SetColorTexture(1, 0.82, 0.2, LINE_A)
+    Line(f.lineLo, lo, 0, lo, GLOW_CAP)
+    Line(f.lineHi, hi, -GLOW_CAP, hi, 0)
+    Fade(f.lineLo, vert, 0, LINE_A)
+    Fade(f.lineHi, vert, LINE_A, 0)
+end
+function D.EdgeGlow(side, x, y)
     local f = D.glow
-    if not side then
-        if f then f:Hide() f.side = nil end
+    if not side or not x then
+        if f then f:Hide() end
         return
     end
     if not f then
         f = CreateFrame("Frame", nil, UIParent)
         f:SetFrameStrata("HIGH")
         f:EnableMouse(false)
-        f.band = f:CreateTexture(nil, "BACKGROUND")
-        f.band:SetAllPoints()
-        f.band:SetColorTexture(1, 1, 1, 1)
-        f.band:SetBlendMode("ADD")
-        f.line = f:CreateTexture(nil, "ARTWORK")
-        f.line:SetColorTexture(1, 0.82, 0.2, 0.9)
-        f.line:SetBlendMode("ADD")
+        f.mid, f.capLo, f.capHi = GlowTex(f, "BACKGROUND"), GlowTex(f, "BACKGROUND"), GlowTex(f, "BACKGROUND")
+        f.line, f.lineLo, f.lineHi = GlowTex(f, "ARTWORK"), GlowTex(f, "ARTWORK"), GlowTex(f, "ARTWORK")
+        f.pieces = { f.mid, f.capLo, f.capHi, f.line, f.lineLo, f.lineHi }
         D.glow = f
     end
     if f.side ~= side then
         f.side = side
-        f:ClearAllPoints()
-        f.line:ClearAllPoints()
-        local vertical = side == "top" or side == "bottom" -- the band fades up or down
-        if side == "left" then
-            f:SetPoint("TOPLEFT") f:SetPoint("BOTTOMLEFT") f:SetWidth(GLOW_DEPTH)
-            f.line:SetPoint("TOPLEFT") f.line:SetPoint("BOTTOMLEFT") f.line:SetWidth(2)
-            Fade(f.band, false, 0.45, 0) -- HORIZONTAL runs left to right
-        elseif side == "right" then
-            f:SetPoint("TOPRIGHT") f:SetPoint("BOTTOMRIGHT") f:SetWidth(GLOW_DEPTH)
-            f.line:SetPoint("TOPRIGHT") f.line:SetPoint("BOTTOMRIGHT") f.line:SetWidth(2)
-            Fade(f.band, false, 0, 0.45)
-        elseif side == "top" then
-            f:SetPoint("TOPLEFT") f:SetPoint("TOPRIGHT") f:SetHeight(GLOW_DEPTH)
-            f.line:SetPoint("TOPLEFT") f.line:SetPoint("TOPRIGHT") f.line:SetHeight(2)
-            Fade(f.band, true, 0, 0.45) -- VERTICAL runs bottom to top
-        else
-            f:SetPoint("BOTTOMLEFT") f:SetPoint("BOTTOMRIGHT") f:SetHeight(GLOW_DEPTH)
-            f.line:SetPoint("BOTTOMLEFT") f.line:SetPoint("BOTTOMRIGHT") f.line:SetHeight(2)
-            Fade(f.band, true, 0.45, 0)
-        end
+        ShapeGlow(f, side)
     end
+    -- Centred on the kit along the edge, kept on screen.
+    local W, H = UIParent:GetWidth(), UIParent:GetHeight()
+    local half = GLOW_LEN / 2
+    local cx, cy
+    if side == "left" or side == "right" then
+        cx = side == "left" and GLOW_DEPTH / 2 or W - GLOW_DEPTH / 2
+        cy = math.min(math.max(y, half), H - half)
+    else
+        cy = side == "bottom" and GLOW_DEPTH / 2 or H - GLOW_DEPTH / 2
+        cx = math.min(math.max(x, half), W - half)
+    end
+    f:ClearAllPoints()
+    f:SetPoint("CENTER", UIParent, "BOTTOMLEFT", cx, cy)
     f:Show()
 end
 
@@ -1161,7 +1209,7 @@ local function Watcher()
         if not api then return end
         local cx, cy = Center(api.kit)
         if cx then
-            D.EdgeGlow(NearEdge(cx, cy))
+            D.EdgeGlow(NearEdge(cx, cy), cx, cy)
             Preview(drag.key, cx, cy)
         end
     end)
