@@ -1635,7 +1635,7 @@ function D.SetupMinimap()
     end
     -- The chest at the size it shows on screen (addon art isn't mipmapped).
     local px = 27
-    local _, h = GetPhysicalScreenSize and GetPhysicalScreenSize()
+    local h = GetPhysicalScreenSize and select(2, GetPhysicalScreenSize()) -- (an "and" would keep only the width)
     if h and h > 0 then px = 27 * mmButton:GetEffectiveScale() * h / 768 end
     local size = 128
     for _, sz in ipairs({ 32, 48, 64, 96, 128 }) do if px <= sz then size = sz break end end
