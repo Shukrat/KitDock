@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 17
+local VERSION = 18
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -39,6 +39,9 @@ ns.Dock = D
 D.version = VERSION
 D.kits = D.kits or {}
 D.media = D.media or ("Interface\\AddOns\\" .. addonName .. "\\media\\")
+-- Art new in this version (the Kits chest) comes from the kit that carries
+-- this copy, since an older kit loaded first may not ship it.
+local OWN_MEDIA = "Interface\\AddOns\\" .. addonName .. "\\media\\"
 
 local ORDER = { "fak", "ck", "fk" }
 local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and drop)
@@ -1597,17 +1600,16 @@ function D.SetupMinimap()
         b:SetFrameLevel(Minimap:GetFrameLevel() + 8)
         b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
         b:RegisterForDrag("LeftButton")
+        -- The Kits chest (it has its own gold rim), drawn 27 across inside the
+        -- 31 button so it sits the same size as other addons' minimap buttons.
         local icon = b:CreateTexture(nil, "ARTWORK")
-        icon:SetPoint("TOPLEFT", 7, -7)
-        icon:SetPoint("BOTTOMRIGHT", -7, 7)
-        icon:SetTexture(D.media .. "pin_dot", nil, nil, "LINEAR")
-        local ring = b:CreateTexture(nil, "OVERLAY")
-        ring:SetAllPoints()
-        ring:SetTexture(D.media .. "ring_prof_64", nil, nil, "LINEAR")
+        icon:SetPoint("TOPLEFT", 2, -2)
+        icon:SetPoint("BOTTOMRIGHT", -2, 2)
+        b.icon = icon
         local hl = b:CreateTexture(nil, "HIGHLIGHT")
         hl:SetTexture(D.media .. "glow_ring")
         hl:SetBlendMode("ADD")
-        hl:SetAllPoints()
+        hl:SetAllPoints(icon)
         hl:SetAlpha(0.5)
         b:SetScript("OnClick", function() ToggleMenu() end)
         b:SetScript("OnDragStart", function(self)
@@ -1631,6 +1633,13 @@ function D.SetupMinimap()
         b:SetScript("OnLeave", function() GameTooltip:Hide() end)
         mmButton = b
     end
+    -- The chest at the size it shows on screen (addon art isn't mipmapped).
+    local px = 27
+    local _, h = GetPhysicalScreenSize and GetPhysicalScreenSize()
+    if h and h > 0 then px = 27 * mmButton:GetEffectiveScale() * h / 768 end
+    local size = 128
+    for _, sz in ipairs({ 32, 48, 64, 96, 128 }) do if px <= sz then size = sz break end end
+    mmButton.icon:SetTexture(OWN_MEDIA .. "kits_chest_" .. size, nil, nil, "LINEAR")
     mmButton:SetShown(DB().minimap ~= false)
     PlaceMinimap()
     if menu and menu:IsShown() then FillMenu() end
