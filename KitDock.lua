@@ -875,28 +875,40 @@ local function DoLayout()
         end
     end
 
-    -- Opened in place: at its own spot, raised (if need be) until its open
-    -- slots below the button clear the tops of the other kits.
-    local lift, liftedY = 0, nil
+    -- Opened in place: where it goes (from the pin), so that its open slots
+    -- clear the other kits, which keep their spots.
+    --   two kits: level with the other, on the pair's own line, just far
+    --     enough along it that its slots on that side miss the other kit
+    --   three: at its own spot, raised until its slots below the button clear
+    --     the tops of the other two
+    local inPlaceAt
     if inPlace and n > 1 then
         local ii = InList(keys, inPlace)
-        local a = math.rad(angles[ii])
-        local myY = r * math.sin(a)
-        local below = 0
         local api = D.kits[inPlace]
-        if api.Reach then
-            local _, _, _, b = api.Reach()
-            below = b or 0
-        end
-        local top = -math.huge
-        for i, k in ipairs(keys) do
-            if k ~= inPlace then
-                local o = D.kits[k].kit
-                top = math.max(top, r * math.sin(math.rad(angles[i])) + o:GetWidth() * o:GetScale() / 2)
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
+        if n == 2 then
+            local oi = 3 - ii
+            local o = D.kits[keys[oi]].kit
+            local oa = math.rad(angles[oi])
+            local ox, oy = r * math.cos(oa), r * math.sin(oa)
+            local ux, uy = -math.cos(oa), -math.sin(oa) -- (from the other kit toward this one)
+            -- How far its slots reach back toward the other kit.
+            local back = (ux >= 0 and L or R) * math.abs(ux) + (uy >= 0 and B or T) * math.abs(uy)
+            local d = math.max(2 * r, back + o:GetWidth() * o:GetScale() / 2 + 6)
+            inPlaceAt = { ox + ux * d, oy + uy * d }
+        else
+            local a = math.rad(angles[ii])
+            local myX, myY = r * math.cos(a), r * math.sin(a)
+            local top = -math.huge
+            for i, k in ipairs(keys) do
+                if k ~= inPlace then
+                    local o = D.kits[k].kit
+                    top = math.max(top, r * math.sin(math.rad(angles[i])) + o:GetWidth() * o:GetScale() / 2)
+                end
             end
+            inPlaceAt = { myX, math.max(myY, top + B + 6) }
         end
-        lift = math.max(0, top + below + 6 - myY)
-        liftedY = myY + lift
     end
 
     for i, k in ipairs(keys) do
@@ -909,7 +921,7 @@ local function DoLayout()
         if n > 1 and k ~= openKey then
             local a = math.rad(angles[i])
             dx, dy = r * math.cos(a), r * math.sin(a)
-            if k == inPlace then dy = dy + lift end
+            if k == inPlace and inPlaceAt then dx, dy = inPlaceAt[1], inPlaceAt[2] end
         end
         kit:ClearAllPoints()
         kit:SetPoint("CENTER", pin, "CENTER", dx / ks, dy / ks)
@@ -921,19 +933,23 @@ local function DoLayout()
     end
     pin:SetShown(n >= 2 and not openKey and not D.pinCombatHidden)
 
-    -- Raised that far, the open kit's top slots could run off the top of the
-    -- screen: then the pin (and everything on it) comes down for now. Not
-    -- saved: the next layout puts the pin back at its own spot.
-    if liftedY then
+    -- Moved that far, the open kit's slots could run off the screen: then
+    -- the pin (and everything on it) moves in for now. Not saved: the next
+    -- layout puts the pin back at its own spot.
+    if inPlaceAt then
         local api = D.kits[inPlace]
-        local t = 0
-        if api.Reach then t = select(3, api.Reach()) or 0 end
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
         local px, py = Center(pin)
-        local H = UIParent:GetHeight()
-        local over = px and (py + liftedY + t - (H - 4)) or 0
-        if over > 0 then
-            pin:ClearAllPoints()
-            pin:SetPoint("CENTER", UIParent, "BOTTOMLEFT", px, py - over)
+        if px then
+            local W, H, M = UIParent:GetWidth(), UIParent:GetHeight(), 4
+            local fx, fy = px + inPlaceAt[1], py + inPlaceAt[2]
+            local sx = math.max(0, M - (fx - L)) - math.max(0, (fx + R) - (W - M))
+            local sy = math.max(0, M - (fy - B)) - math.max(0, (fy + T) - (H - M))
+            if sx ~= 0 or sy ~= 0 then
+                pin:ClearAllPoints()
+                pin:SetPoint("CENTER", UIParent, "BOTTOMLEFT", px + sx, py + sy)
+            end
         end
     end
 end
