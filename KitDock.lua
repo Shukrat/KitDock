@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 19
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -165,9 +165,20 @@ local function SetPinAt(x, y)
     DB().pin = { x, y }
 end
 
+-- For the kits: the pin was moved in combat (by a kit's secure code, see
+-- Kit Core) to here, in UIParent units. Saved now; the next layout puts it
+-- there properly.
+function D.SavePinAt(x, y)
+    if x and y then DB().pin = { x, y } end
+end
+
+-- The pin is a protected frame (from v19), so a kit's secure code can move it
+-- in combat, and the docked kits with it: they're anchored to it. Its own
+-- drag still only works out of combat.
 local function Pin()
     if D.pin then return D.pin end
-    local p = CreateFrame("Button", "KitDockPin", UIParent)
+    local okp, p = pcall(CreateFrame, "Button", "KitDockPin", UIParent, "SecureActionButtonTemplate")
+    if not okp or not p then p = CreateFrame("Button", "KitDockPin", UIParent) end
     p:SetSize(20, 20)
     p:SetFrameStrata("MEDIUM")
     p:SetFrameLevel(30)
