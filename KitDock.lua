@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 19
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -165,9 +165,20 @@ local function SetPinAt(x, y)
     DB().pin = { x, y }
 end
 
+-- For the kits: the pin was moved in combat (by a kit's secure code, see
+-- Kit Core) to here, in UIParent units. Saved now; the next layout puts it
+-- there properly.
+function D.SavePinAt(x, y)
+    if x and y then DB().pin = { x, y } end
+end
+
+-- The pin is a protected frame (from v19), so a kit's secure code can move it
+-- in combat, and the docked kits with it: they're anchored to it. Its own
+-- drag still only works out of combat.
 local function Pin()
     if D.pin then return D.pin end
-    local p = CreateFrame("Button", "KitDockPin", UIParent)
+    local okp, p = pcall(CreateFrame, "Button", "KitDockPin", UIParent, "SecureActionButtonTemplate")
+    if not okp or not p then p = CreateFrame("Button", "KitDockPin", UIParent) end
     p:SetSize(20, 20)
     p:SetFrameStrata("MEDIUM")
     p:SetFrameLevel(30)
@@ -351,7 +362,10 @@ end)
 -- The kit has just been put where it ends up (anchor and scale); glide it
 -- there from bx, by (in its old own units) at old effective scale bscale.
 local function KitGlide(kit, bx, by, bscale)
+    -- (not as combat starts either: the glide would run on into combat, where
+    -- the kit can't move, and leave it part-way)
     if not bx or not kit:IsShown() or InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end
     local ui = UIParent:GetEffectiveScale()
     local ex, ey = Center(kit)
     if not ex then return end
@@ -676,6 +690,26 @@ local function DoLayout()
     local keys = DockedKeys()
     local pin = Pin()
 
+    -- A kit opened in place (see D.OpenInPlace): the kits that hide in
+    -- combat step out (tucked) and the rest close up as a smaller dock.
+    local inPlace = D.inPlace
+    if inPlace and not (InList(keys, inPlace) and D.kits[inPlace].IsOpen()) then
+        inPlace, D.inPlace = nil, nil
+    end
+    local away = {}
+    if inPlace then
+        local kept = {}
+        for _, k in ipairs(keys) do
+            local api = D.kits[k]
+            if k ~= inPlace and api.HidesInCombat and api.HidesInCombat() then
+                away[#away + 1] = k
+            else
+                kept[#kept + 1] = k
+            end
+        end
+        keys = kept
+    end
+
     -- Where every kit is on screen right now, before anything moves (moving
     -- the pin moves the kits on it), so each glides from where it really was.
     local before = {}
@@ -744,6 +778,10 @@ local function DoLayout()
             end
         end
     end
+    for _, k in ipairs(away) do
+        StopTween(D.kits[k].kit)
+        D.kits[k].Tuck(true)
+    end
     if #keys == 0 then
         pin:Hide()
         busy = false
@@ -777,7 +815,7 @@ local function DoLayout()
 
     local openKey
     for _, k in ipairs(keys) do
-        if D.kits[k].IsOpen() then openKey = k end
+        if D.kits[k].IsOpen() and k ~= inPlace then openKey = k end -- (one open in place doesn't take the pin)
     end
 
     -- Where each docked kit is now, so it can glide to its new spot (and
@@ -818,7 +856,7 @@ local function DoLayout()
             end
         else
             SetEdge(api, nil)
-            SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
+            SetCompact(api, n > 1 and k ~= openKey and k ~= inPlace, angles[i], n == 2 and 170 or 115)
             local kit = api.kit
             size = math.max(size, kit:GetWidth() * kit:GetScale())
         end
@@ -837,6 +875,42 @@ local function DoLayout()
         end
     end
 
+    -- Opened in place: where it goes (from the pin), so that its open slots
+    -- clear the other kits, which keep their spots.
+    --   two kits: level with the other, on the pair's own line, just far
+    --     enough along it that its slots on that side miss the other kit
+    --   three: at its own spot, raised until its slots below the button clear
+    --     the tops of the other two
+    local inPlaceAt
+    if inPlace and n > 1 then
+        local ii = InList(keys, inPlace)
+        local api = D.kits[inPlace]
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
+        if n == 2 then
+            local oi = 3 - ii
+            local o = D.kits[keys[oi]].kit
+            local oa = math.rad(angles[oi])
+            local ox, oy = r * math.cos(oa), r * math.sin(oa)
+            local ux, uy = -math.cos(oa), -math.sin(oa) -- (from the other kit toward this one)
+            -- How far its slots reach back toward the other kit.
+            local back = (ux >= 0 and L or R) * math.abs(ux) + (uy >= 0 and B or T) * math.abs(uy)
+            local d = math.max(2 * r, back + o:GetWidth() * o:GetScale() / 2 + 6)
+            inPlaceAt = { ox + ux * d, oy + uy * d }
+        else
+            local a = math.rad(angles[ii])
+            local myX, myY = r * math.cos(a), r * math.sin(a)
+            local top = -math.huge
+            for i, k in ipairs(keys) do
+                if k ~= inPlace then
+                    local o = D.kits[k].kit
+                    top = math.max(top, r * math.sin(math.rad(angles[i])) + o:GetWidth() * o:GetScale() / 2)
+                end
+            end
+            inPlaceAt = { myX, math.max(myY, top + B + 6) }
+        end
+    end
+
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
@@ -847,6 +921,7 @@ local function DoLayout()
         if n > 1 and k ~= openKey then
             local a = math.rad(angles[i])
             dx, dy = r * math.cos(a), r * math.sin(a)
+            if k == inPlace and inPlaceAt then dx, dy = inPlaceAt[1], inPlaceAt[2] end
         end
         kit:ClearAllPoints()
         kit:SetPoint("CENTER", pin, "CENTER", dx / ks, dy / ks)
@@ -857,6 +932,26 @@ local function DoLayout()
         end
     end
     pin:SetShown(n >= 2 and not openKey and not D.pinCombatHidden)
+
+    -- Moved that far, the open kit's slots could run off the screen: then
+    -- the pin (and everything on it) moves in for now. Not saved: the next
+    -- layout puts the pin back at its own spot.
+    if inPlaceAt then
+        local api = D.kits[inPlace]
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
+        local px, py = Center(pin)
+        if px then
+            local W, H, M = UIParent:GetWidth(), UIParent:GetHeight(), 4
+            local fx, fy = px + inPlaceAt[1], py + inPlaceAt[2]
+            local sx = math.max(0, M - (fx - L)) - math.max(0, (fx + R) - (W - M))
+            local sy = math.max(0, M - (fy - B)) - math.max(0, (fy + T) - (H - M))
+            if sx ~= 0 or sy ~= 0 then
+                pin:ClearAllPoints()
+                pin:SetPoint("CENTER", UIParent, "BOTTOMLEFT", px + sx, py + sy)
+            end
+        end
+    end
 end
 
 -- Lays every kit out: floating, on the pin, or on the screen edges.
@@ -926,7 +1021,25 @@ function D.Opening(key)
     D.Layout()
 end
 
+-- A docked kit opening without taking the pin (First Aid Kit's "open on
+-- combat"): the other kits stay where they are, docked and shrunk, and it
+-- opens full size at its own spot, raised until its open slots clear them.
+-- Kits that hide in combat step out, and the rest close up as a smaller
+-- dock. Ends when the kit closes (D.Closed). Out of combat only: as combat
+-- starts is the last moment (PLAYER_REGEN_DISABLED).
+function D.OpenInPlace(key)
+    if InCombatLockdown() then return end
+    if not PinDocked(key) then return D.Opening(key) end
+    for _, k in ipairs(DockedKeys()) do
+        local api = D.kits[k]
+        if k ~= key and api and api.IsOpen() then api.Close() end
+    end
+    D.inPlace = key
+    D.Layout()
+end
+
 function D.Closed(key)
+    if D.inPlace == key then D.inPlace = nil end
     if D.IsDocked(key) then D.Layout() end
 end
 
