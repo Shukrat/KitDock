@@ -362,7 +362,10 @@ end)
 -- The kit has just been put where it ends up (anchor and scale); glide it
 -- there from bx, by (in its old own units) at old effective scale bscale.
 local function KitGlide(kit, bx, by, bscale)
+    -- (not as combat starts either: the glide would run on into combat, where
+    -- the kit can't move, and leave it part-way)
     if not bx or not kit:IsShown() or InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end
     local ui = UIParent:GetEffectiveScale()
     local ex, ey = Center(kit)
     if not ex then return end
