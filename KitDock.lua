@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 19
+local VERSION = 20
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -289,26 +289,6 @@ function D.Fade(kit, out, done)
     kit.fadeAG:Play()
 end
 
--- After a kit has been moved and resized for real: play it from where it
--- was (x, y and effective scale before) to where it is now.
-local function Glide(kit, bx, by, bscale)
-    if not bx or not kit:IsShown() then return end
-    local nx, ny = kit:GetCenter()
-    if not nx then return end
-    local eff = kit:GetEffectiveScale()
-    local rel = eff / UIParent:GetEffectiveScale()
-    local ox, oy = bx * (bscale / eff) - nx, by * (bscale / eff) - ny -- in the kit's own units
-    local ratio = bscale / eff
-    if math.abs(ox) < 1 and math.abs(oy) < 1 and math.abs(ratio - 1) < 0.01 then return end
-    Anims(kit)
-    kit.dockAG:Stop()
-    kit.dockJump:SetOffset(ox, oy)
-    kit.dockGlide:SetOffset(-ox, -oy)
-    kit.dockGrow:SetScaleFrom(ratio, ratio)
-    kit.dockGrow:SetScaleTo(1, 1)
-    kit.dockAG:Play()
-end
-
 -- Kit buttons glide by being moved for real, a little each frame, rather
 -- than with an animation: a new layout part-way through (the live merge
 -- preview makes them often) then starts from wherever the kit actually is
@@ -321,6 +301,11 @@ D.tweener = tweener -- (for testing)
 local function Smooth(t) return t * t * (3 - 2 * t) end
 
 local function TweenApply(kit, tw, k)
+    if tw.byOffset then -- (a slot or other frame: its own anchor, offset less and less)
+        kit:ClearAllPoints()
+        kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x + tw.ox * (1 - k), tw.y + tw.oy * (1 - k))
+        return
+    end
     local s = tw.ss + (tw.es - tw.ss) * k
     local x = tw.sx + (tw.ex - tw.sx) * k
     local y = tw.sy + (tw.ey - tw.sy) * k
@@ -332,6 +317,12 @@ end
 
 local function TweenFinish(kit, tw)
     tweens[kit] = nil
+    if tw.byOffset then
+        if InCombatLockdown() then return end
+        kit:ClearAllPoints()
+        kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
+        return
+    end
     kit:SetScale(tw.es)
     kit:ClearAllPoints()
     kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
@@ -378,6 +369,35 @@ local function KitGlide(kit, bx, by, bscale)
     tweens[kit] = { t = 0, sx = sx, sy = sy, ss = ss, ex = ex, ey = ey, es = es, parentEff = parentEff,
         p = p, rel = rel, rp = rp, x = x, y = y }
     TweenApply(kit, tweens[kit], 0)
+    tweener:Show()
+end
+
+-- Any other frame (a kit's pinned slots, its timers) that has just been put
+-- where it ends up: glide it there from bx, by (in its old own units) at old
+-- effective scale bscale. Moved for real a little each frame, by easing off
+-- an offset on its own anchor, so it still goes along with the kit it hangs
+-- from, and so does everything on it: a game animation moves only the
+-- picture, and a slot's cooldown numbers didn't follow (from v20).
+local function Glide(frame, bx, by, bscale)
+    if not bx or not frame:IsShown() or InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end -- (see KitGlide)
+    if frame.GetNumPoints and frame:GetNumPoints() ~= 1 then return end
+    local nx, ny = frame:GetCenter()
+    if not nx then return end
+    local eff = frame:GetEffectiveScale()
+    local ox, oy = bx * (bscale / eff) - nx, by * (bscale / eff) - ny -- in the frame's own units
+    if math.abs(ox) < 1 and math.abs(oy) < 1 then return end
+    local cur = tweens[frame]
+    local p, rel, rp, x, y
+    if cur and cur.byOffset then
+        p, rel, rp, x, y = cur.p, cur.rel, cur.rp, cur.x, cur.y -- (already gliding: its real anchor)
+    else
+        p, rel, rp, x, y = frame:GetPoint(1)
+    end
+    if not p then return end
+    if frame.dockAG then frame.dockAG:Stop() end
+    tweens[frame] = { t = 0, byOffset = true, p = p, rel = rel, rp = rp, x = x, y = y, ox = ox, oy = oy }
+    TweenApply(frame, tweens[frame], 0)
     tweener:Show()
 end
 
