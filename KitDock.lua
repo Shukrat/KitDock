@@ -330,11 +330,14 @@ end
 -- or when combat starts and frames can't move).
 local function StopTween(kit)
     local tw = tweens[kit]
-    if tw then TweenFinish(kit, tw) end
+    -- Secure kit buttons can't be scaled or moved in combat: leave the glide
+    -- where it is and finish it when combat ends.
+    if tw and not InCombatLockdown() then TweenFinish(kit, tw) end
 end
 D.StopTween = StopTween
 
 tweener:SetScript("OnUpdate", function(self, dt)
+    if InCombatLockdown() then return end -- frozen until combat ends
     local any = false
     for kit, tw in pairs(tweens) do
         tw.t = tw.t + dt
@@ -1663,12 +1666,12 @@ watcher:RegisterEvent("PLAYER_REGEN_DISABLED")
 watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
 watcher:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_REGEN_DISABLED" then
-        for kit in pairs(tweens) do StopTween(kit) end
         if D.pin and PinHidesInCombat() then
             D.pinCombatHidden = true
             D.pin:Hide()
         end
     else
+        for kit in pairs(tweens) do StopTween(kit) end -- finish glides frozen by combat
         local hidden = D.pinCombatHidden
         D.pinCombatHidden = nil
         if D.pending or hidden then D.Layout() end
