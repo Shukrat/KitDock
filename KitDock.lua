@@ -25,9 +25,16 @@ local addonName, ns = ...
 -- A kit can register as edges only (edgesOnly in its Register call): it
 -- snaps to the screen edges like any kit but never joins the pin, and other
 -- kits never merge with it.
+--
+-- The top dock parks kits you only need now and then: a small pill at the
+-- top middle of the screen, tucked half off the top until the mouse goes
+-- over it. Drag a kit onto it to park it (a small button in a row); drag it
+-- off to take it out again, back to its own saved spot if you let go on
+-- nothing. Edges-only kits stay out of it. Like everything else here it only
+-- moves out of combat: in combat it stays as it was.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 22
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -46,6 +53,16 @@ local OWN_MEDIA = "Interface\\AddOns\\" .. addonName .. "\\media\\"
 local ORDER = { "fak", "ck", "fk" }
 local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and drop)
 
+-- The top dock (UI units).
+local PARK_SIZE = 34     -- a parked kit's button on screen
+local PARK_GAP = 11      -- between parked kits
+local PARK_PAD = 18      -- from the pill's ends to the first and last kit
+local PARK_H = 50        -- the pill's height
+local PARK_TUCK = 26     -- tucked: the pill's top sits this far above the screen's, so half of it shows
+local PARK_SHOW = -10    -- out: the pill's top sits this far below the screen's top
+local PARK_SLIDE = 0.18  -- seconds to slide
+local PARK_LINGER = 0.35 -- seconds the mouse has to be away before it tucks again
+
 local function DB()
     KitDockDB = KitDockDB or {}
     local db = KitDockDB
@@ -53,6 +70,7 @@ local function DB()
     db.order = db.order or { "fak", "ck", "fk" }
     if db.triUp == nil then db.triUp = true end
     db.two = db.two or 0
+    db.parked = db.parked or {}
     return db
 end
 D.DB = DB -- the kits' settings panels bind their docking options to it
@@ -74,10 +92,38 @@ local function EdgesOnly(k)
     return api and api.edgesOnly and true or false
 end
 
--- Kits that can go on the pin.
+-- Kits parked in the top dock, in order (saved). A kit that isn't loaded or
+-- is hidden keeps its place in the list but isn't in the dock.
+local function Parked()
+    local db = DB()
+    db.parked = db.parked or {}
+    return db.parked
+end
+
+local function IsParked(k)
+    return InList(Parked(), k) ~= nil
+end
+
+-- A kit that can park: any that can go on the pin (edges-only kits stay out).
+local function Parkable(k)
+    return Shown(k) and not EdgesOnly(k)
+end
+
+-- The parked kits that are loaded and showing, in order.
+local function ParkedKeys()
+    local keys = {}
+    for _, k in ipairs(Parked()) do
+        if D.kits[k] and Parkable(k) and not InList(keys, k) then keys[#keys + 1] = k end
+    end
+    return keys
+end
+
+-- Kits that can go on the pin (parked ones are in the top dock instead).
 local function Count()
     local n = 0
-    for k in pairs(D.kits) do if Shown(k) and not EdgesOnly(k) then n = n + 1 end end
+    for k in pairs(D.kits) do
+        if Shown(k) and not EdgesOnly(k) and not IsParked(k) then n = n + 1 end
+    end
     return n
 end
 
@@ -124,10 +170,10 @@ local function DockedKeys()
     if not D.Active() then return keys end
     local db = DB()
     for _, k in ipairs(db.order) do
-        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) then keys[#keys + 1] = k end
+        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) and not IsParked(k) then keys[#keys + 1] = k end
     end
     for _, k in ipairs(ORDER) do -- anything missing from a saved order
-        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) and not InList(keys, k) then keys[#keys + 1] = k end
+        if Shown(k) and not EdgesOnly(k) and db.docked[k] ~= false and not EdgeOf(k) and not IsParked(k) and not InList(keys, k) then keys[#keys + 1] = k end
     end
     return keys
 end
@@ -136,11 +182,15 @@ local function PinDocked(key)
     return InList(DockedKeys(), key) ~= nil
 end
 
--- For the kits: placed by the dock (on the pin or on an edge), not by
--- their own saved spot.
+-- For the kits: placed by the dock (on the pin, on an edge or parked in the
+-- top dock), not by their own saved spot.
 function D.IsDocked(key)
-    return PinDocked(key) or EdgeOf(key) ~= nil
+    return PinDocked(key) or EdgeOf(key) ~= nil or (IsParked(key) and Parkable(key))
 end
+
+-- Whether a kit is parked in the top dock, and whether it can be.
+function D.IsParked(key) return IsParked(key) and Parkable(key) end
+function D.Parkable(key) return Parkable(key) end
 
 -- A frame's centre in UIParent units.
 local function Center(f)
@@ -165,9 +215,20 @@ local function SetPinAt(x, y)
     DB().pin = { x, y }
 end
 
+-- For the kits: the pin was moved in combat (by a kit's secure code, see
+-- Kit Core) to here, in UIParent units. Saved now; the next layout puts it
+-- there properly.
+function D.SavePinAt(x, y)
+    if x and y then DB().pin = { x, y } end
+end
+
+-- The pin is a protected frame (from v19), so a kit's secure code can move it
+-- in combat, and the docked kits with it: they're anchored to it. Its own
+-- drag still only works out of combat.
 local function Pin()
     if D.pin then return D.pin end
-    local p = CreateFrame("Button", "KitDockPin", UIParent)
+    local okp, p = pcall(CreateFrame, "Button", "KitDockPin", UIParent, "SecureActionButtonTemplate")
+    if not okp or not p then p = CreateFrame("Button", "KitDockPin", UIParent) end
     p:SetSize(20, 20)
     p:SetFrameStrata("MEDIUM")
     p:SetFrameLevel(30)
@@ -278,26 +339,6 @@ function D.Fade(kit, out, done)
     kit.fadeAG:Play()
 end
 
--- After a kit has been moved and resized for real: play it from where it
--- was (x, y and effective scale before) to where it is now.
-local function Glide(kit, bx, by, bscale)
-    if not bx or not kit:IsShown() then return end
-    local nx, ny = kit:GetCenter()
-    if not nx then return end
-    local eff = kit:GetEffectiveScale()
-    local rel = eff / UIParent:GetEffectiveScale()
-    local ox, oy = bx * (bscale / eff) - nx, by * (bscale / eff) - ny -- in the kit's own units
-    local ratio = bscale / eff
-    if math.abs(ox) < 1 and math.abs(oy) < 1 and math.abs(ratio - 1) < 0.01 then return end
-    Anims(kit)
-    kit.dockAG:Stop()
-    kit.dockJump:SetOffset(ox, oy)
-    kit.dockGlide:SetOffset(-ox, -oy)
-    kit.dockGrow:SetScaleFrom(ratio, ratio)
-    kit.dockGrow:SetScaleTo(1, 1)
-    kit.dockAG:Play()
-end
-
 -- Kit buttons glide by being moved for real, a little each frame, rather
 -- than with an animation: a new layout part-way through (the live merge
 -- preview makes them often) then starts from wherever the kit actually is
@@ -310,6 +351,11 @@ D.tweener = tweener -- (for testing)
 local function Smooth(t) return t * t * (3 - 2 * t) end
 
 local function TweenApply(kit, tw, k)
+    if tw.byOffset then -- (a slot or other frame: its own anchor, offset less and less)
+        kit:ClearAllPoints()
+        kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x + tw.ox * (1 - k), tw.y + tw.oy * (1 - k))
+        return
+    end
     local s = tw.ss + (tw.es - tw.ss) * k
     local x = tw.sx + (tw.ex - tw.sx) * k
     local y = tw.sy + (tw.ey - tw.sy) * k
@@ -321,6 +367,12 @@ end
 
 local function TweenFinish(kit, tw)
     tweens[kit] = nil
+    if tw.byOffset then
+        if InCombatLockdown() then return end
+        kit:ClearAllPoints()
+        kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
+        return
+    end
     kit:SetScale(tw.es)
     kit:ClearAllPoints()
     kit:SetPoint(tw.p, tw.rel, tw.rp, tw.x, tw.y)
@@ -335,6 +387,9 @@ end
 D.StopTween = StopTween
 
 tweener:SetScript("OnUpdate", function(self, dt)
+    -- Kit buttons are secure: once combat has locked them, a glide can't
+    -- move or scale them. Freeze here; combat's end puts them in place.
+    if InCombatLockdown() then self:Hide() return end
     local any = false
     for kit, tw in pairs(tweens) do
         tw.t = tw.t + dt
@@ -351,7 +406,10 @@ end)
 -- The kit has just been put where it ends up (anchor and scale); glide it
 -- there from bx, by (in its old own units) at old effective scale bscale.
 local function KitGlide(kit, bx, by, bscale)
+    -- (not as combat starts either: the glide would run on into combat, where
+    -- the kit can't move, and leave it part-way)
     if not bx or not kit:IsShown() or InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end
     local ui = UIParent:GetEffectiveScale()
     local ex, ey = Center(kit)
     if not ex then return end
@@ -364,6 +422,35 @@ local function KitGlide(kit, bx, by, bscale)
     tweens[kit] = { t = 0, sx = sx, sy = sy, ss = ss, ex = ex, ey = ey, es = es, parentEff = parentEff,
         p = p, rel = rel, rp = rp, x = x, y = y }
     TweenApply(kit, tweens[kit], 0)
+    tweener:Show()
+end
+
+-- Any other frame (a kit's pinned slots, its timers) that has just been put
+-- where it ends up: glide it there from bx, by (in its old own units) at old
+-- effective scale bscale. Moved for real a little each frame, by easing off
+-- an offset on its own anchor, so it still goes along with the kit it hangs
+-- from, and so does everything on it: a game animation moves only the
+-- picture, and a slot's cooldown numbers didn't follow (from v20).
+local function Glide(frame, bx, by, bscale)
+    if not bx or not frame:IsShown() or InCombatLockdown() then return end
+    if UnitAffectingCombat and UnitAffectingCombat("player") then return end -- (see KitGlide)
+    if frame.GetNumPoints and frame:GetNumPoints() ~= 1 then return end
+    local nx, ny = frame:GetCenter()
+    if not nx then return end
+    local eff = frame:GetEffectiveScale()
+    local ox, oy = bx * (bscale / eff) - nx, by * (bscale / eff) - ny -- in the frame's own units
+    if math.abs(ox) < 1 and math.abs(oy) < 1 then return end
+    local cur = tweens[frame]
+    local p, rel, rp, x, y
+    if cur and cur.byOffset then
+        p, rel, rp, x, y = cur.p, cur.rel, cur.rp, cur.x, cur.y -- (already gliding: its real anchor)
+    else
+        p, rel, rp, x, y = frame:GetPoint(1)
+    end
+    if not p then return end
+    if frame.dockAG then frame.dockAG:Stop() end
+    tweens[frame] = { t = 0, byOffset = true, p = p, rel = rel, rp = rp, x = x, y = y, ox = ox, oy = oy }
+    TweenApply(frame, tweens[frame], 0)
     tweener:Show()
 end
 
@@ -668,6 +755,174 @@ function D.EdgeGlow(side, x, y)
     f:Show()
 end
 
+---------------------------------------------------------------------------
+-- The top dock: kits parked until they're needed. A small pill at the top
+-- middle of the screen, tucked half off the top; the mouse over it (or a kit
+-- open under it, or a kit being dragged toward it) slides it down. It moves
+-- the kits along with it, so like the pin it only moves out of combat.
+---------------------------------------------------------------------------
+
+local function TopWidth(n)
+    n = math.max(n, 1)
+    return PARK_PAD * 2 + n * PARK_SIZE + (n - 1) * PARK_GAP
+end
+
+local function Over(f)
+    if f.IsMouseOver then return f:IsMouseOver() end
+    return MouseIsOver and MouseIsOver(f) or false
+end
+
+-- The pill's colours; lit (gold) while a kit is dragged over it.
+local function TopLook(f, lit)
+    if f.lit == lit then return end
+    f.lit = lit
+    if f.SetBackdropColor then
+        f:SetBackdropColor(0.05, 0.06, 0.08, 0.84)
+        if lit then f:SetBackdropBorderColor(1, 0.82, 0.2, 1) else f:SetBackdropBorderColor(0.48, 0.39, 0.19, 1) end
+    end
+end
+
+-- Slides the pill down or up. Nothing moves in combat: it stays as it was.
+local function TopTick(f, dt)
+    if InCombatLockdown() or not f:IsShown() then return end
+    local want = Over(f) or D.topOver
+    if not want then
+        for _, k in ipairs(Parked()) do -- a parked kit open under it keeps it out
+            local api = D.kits[k]
+            if api and Parkable(k) and api.IsOpen() then want = true break end
+        end
+    end
+    if not want and f.hold and GetTime() < f.hold then want = true end
+    if want then
+        f.linger = 0
+        f.out = true
+    else
+        f.linger = (f.linger or 0) + dt
+        if f.linger >= PARK_LINGER then f.out = false end
+    end
+    local target = f.out and PARK_SHOW or PARK_TUCK
+    if f.y ~= target then
+        local step = dt / PARK_SLIDE * (PARK_TUCK - PARK_SHOW)
+        if f.y < target then f.y = math.min(target, f.y + step) else f.y = math.max(target, f.y - step) end
+        f:ClearAllPoints()
+        f:SetPoint("TOP", UIParent, "TOP", 0, f.y)
+    end
+    TopLook(f, D.topOver and true or false)
+end
+
+local function TopDock()
+    if D.top then return D.top end
+    local ok, f = pcall(CreateFrame, "Frame", "KitDockTop", UIParent, "BackdropTemplate")
+    if not ok or not f then f = CreateFrame("Frame", "KitDockTop", UIParent) end
+    f:SetFrameStrata("LOW") -- under the kits (and the pin), over the world
+    f:SetFrameLevel(10)
+    f:SetSize(TopWidth(1), PARK_H)
+    if f.SetBackdrop then
+        f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", tile = true, tileSize = 16, edgeSize = 12,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+    else
+        local bg = f:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        bg:SetColorTexture(0.05, 0.06, 0.08, 0.84)
+    end
+    f.y = PARK_TUCK
+    f:SetPoint("TOP", UIParent, "TOP", 0, f.y)
+    TopLook(f, false)
+    f:SetScript("OnUpdate", TopTick)
+    f:Hide()
+    D.top = f
+    return f
+end
+
+-- Whether a point (UI units) is over the top dock, with room to spare, for
+-- dropping a kit on it. extra: slots the dock would gain (1 for a kit that
+-- isn't parked yet).
+local function TopZone(cx, cy, extra)
+    local W, H = Screen()
+    local half = TopWidth(#ParkedKeys() + (extra or 0)) / 2 + 50
+    return math.abs(cx - W / 2) <= half and cy >= H - (PARK_H + 60)
+end
+
+-- Which slot a kit dropped at x would take.
+local function ParkIndexAt(key, cx)
+    local others = 0
+    for _, k in ipairs(ParkedKeys()) do if k ~= key then others = others + 1 end end
+    local m = others + 1
+    local left = UIParent:GetWidth() / 2 - TopWidth(m) / 2
+    local i = math.floor((cx - left - PARK_PAD + (PARK_SIZE + PARK_GAP) / 2) / (PARK_SIZE + PARK_GAP)) + 1
+    return math.max(1, math.min(m, i))
+end
+
+-- A kit dragged toward the dock: the dock comes out (and shows as a place to
+-- drop even with nothing parked yet).
+function D.TopHover(on)
+    on = on and true or false
+    if D.topOver == on then return end
+    D.topOver = on
+    if on and not (D.top and D.top:IsShown()) then
+        local top = TopDock()
+        top:SetSize(TopWidth(#ParkedKeys()), PARK_H)
+        top:Show()
+    end
+end
+
+-- A kit in the top dock: a small button, its slots out of the way. A kit that
+-- knows about parking (Park) does that itself; one that doesn't is fanned
+-- upward as if docked, which sends its slots off the top of the screen.
+local function SetParked(api, on)
+    local kit = api.kit
+    local w = kit:GetWidth()
+    local scale = (w and w > 0) and (PARK_SIZE / w) or 0.5
+    if math.abs(kit:GetScale() - scale) > 0.001 then kit:SetScale(scale) end
+    if api.parked then return end
+    api.parked = true
+    if api.Park then
+        api.Park(true)
+    elseif api.Compact then
+        api.compact, api.compactAngle, api.compactSpan = true, 90, 30
+        api.Compact(true, 90, 30)
+    end
+end
+
+-- Back out of the dock. (Without Park, the layout's SetCompact(false) undoes
+-- the fanning.)
+local function ClearParked(api)
+    if not api.parked then return end
+    api.parked = nil
+    if api.Park then api.Park(false) end
+end
+
+-- Puts the parked kits in a row on the pill, each gliding from where it was.
+local function LayoutParked(before)
+    local keys = ParkedKeys()
+    local n = #keys
+    if n == 0 and not D.topOver then
+        if D.top then D.top:Hide() end
+        return
+    end
+    local top = TopDock()
+    top:SetSize(TopWidth(n), PARK_H)
+    top:Show()
+    for i, k in ipairs(keys) do
+        local api = D.kits[k]
+        local kit = api.kit
+        if k ~= D.skip then -- (not the one under the cursor)
+            StopTween(kit)
+            if api.BeginMove then api.BeginMove() end
+            SetParked(api, true)
+            SetEdge(api, nil)
+            local ks = kit:GetScale()
+            kit:ClearAllPoints()
+            kit:SetPoint("CENTER", top, "CENTER", ((i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP)) / ks, 0)
+            api.Tuck(false)
+            local b = before[k]
+            if b then KitGlide(kit, b[1], b[2], b[3]) end
+            if api.EndMove then api.EndMove() end
+        end
+    end
+end
+
 -- D.skip: the kit being dragged during a live merge preview. Layout leaves
 -- it alone (it's under the cursor) but still keeps its place in the dock.
 local function DoLayout()
@@ -675,6 +930,31 @@ local function DoLayout()
     local db = DB()
     local keys = DockedKeys()
     local pin = Pin()
+
+    -- A kit that has left the top dock gets its slots back.
+    for key, api in pairs(D.kits) do
+        if api.parked and not (IsParked(key) and Parkable(key)) then ClearParked(api) end
+    end
+
+    -- A kit opened in place (see D.OpenInPlace): the kits that hide in
+    -- combat step out (tucked) and the rest close up as a smaller dock.
+    local inPlace = D.inPlace
+    if inPlace and not (InList(keys, inPlace) and D.kits[inPlace].IsOpen()) then
+        inPlace, D.inPlace = nil, nil
+    end
+    local away = {}
+    if inPlace then
+        local kept = {}
+        for _, k in ipairs(keys) do
+            local api = D.kits[k]
+            if k ~= inPlace and api.HidesInCombat and api.HidesInCombat() then
+                away[#away + 1] = k
+            else
+                kept[#kept + 1] = k
+            end
+        end
+        keys = kept
+    end
 
     -- Where every kit is on screen right now, before anything moves (moving
     -- the pin moves the kits on it), so each glides from where it really was.
@@ -699,7 +979,7 @@ local function DoLayout()
                 kit:ClearAllPoints()
                 kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x, y)
             end
-        elseif not InList(keys, key) and key ~= D.skip and not EdgeOf(key) then
+        elseif not InList(keys, key) and key ~= D.skip and not EdgeOf(key) and not IsParked(key) then
             local kit = api.kit
             local b = before[key]
             local bx, by, bs
@@ -744,6 +1024,11 @@ local function DoLayout()
             end
         end
     end
+    LayoutParked(before)
+    for _, k in ipairs(away) do
+        StopTween(D.kits[k].kit)
+        D.kits[k].Tuck(true)
+    end
     if #keys == 0 then
         pin:Hide()
         busy = false
@@ -777,7 +1062,7 @@ local function DoLayout()
 
     local openKey
     for _, k in ipairs(keys) do
-        if D.kits[k].IsOpen() then openKey = k end
+        if D.kits[k].IsOpen() and k ~= inPlace then openKey = k end -- (one open in place doesn't take the pin)
     end
 
     -- Where each docked kit is now, so it can glide to its new spot (and
@@ -818,7 +1103,7 @@ local function DoLayout()
             end
         else
             SetEdge(api, nil)
-            SetCompact(api, n > 1 and k ~= openKey, angles[i], n == 2 and 170 or 115)
+            SetCompact(api, n > 1 and k ~= openKey and k ~= inPlace, angles[i], n == 2 and 170 or 115)
             local kit = api.kit
             size = math.max(size, kit:GetWidth() * kit:GetScale())
         end
@@ -837,6 +1122,42 @@ local function DoLayout()
         end
     end
 
+    -- Opened in place: where it goes (from the pin), so that its open slots
+    -- clear the other kits, which keep their spots.
+    --   two kits: level with the other, on the pair's own line, just far
+    --     enough along it that its slots on that side miss the other kit
+    --   three: at its own spot, raised until its slots below the button clear
+    --     the tops of the other two
+    local inPlaceAt
+    if inPlace and n > 1 then
+        local ii = InList(keys, inPlace)
+        local api = D.kits[inPlace]
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
+        if n == 2 then
+            local oi = 3 - ii
+            local o = D.kits[keys[oi]].kit
+            local oa = math.rad(angles[oi])
+            local ox, oy = r * math.cos(oa), r * math.sin(oa)
+            local ux, uy = -math.cos(oa), -math.sin(oa) -- (from the other kit toward this one)
+            -- How far its slots reach back toward the other kit.
+            local back = (ux >= 0 and L or R) * math.abs(ux) + (uy >= 0 and B or T) * math.abs(uy)
+            local d = math.max(2 * r, back + o:GetWidth() * o:GetScale() / 2 + 6)
+            inPlaceAt = { ox + ux * d, oy + uy * d }
+        else
+            local a = math.rad(angles[ii])
+            local myX, myY = r * math.cos(a), r * math.sin(a)
+            local top = -math.huge
+            for i, k in ipairs(keys) do
+                if k ~= inPlace then
+                    local o = D.kits[k].kit
+                    top = math.max(top, r * math.sin(math.rad(angles[i])) + o:GetWidth() * o:GetScale() / 2)
+                end
+            end
+            inPlaceAt = { myX, math.max(myY, top + B + 6) }
+        end
+    end
+
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
@@ -847,6 +1168,7 @@ local function DoLayout()
         if n > 1 and k ~= openKey then
             local a = math.rad(angles[i])
             dx, dy = r * math.cos(a), r * math.sin(a)
+            if k == inPlace and inPlaceAt then dx, dy = inPlaceAt[1], inPlaceAt[2] end
         end
         kit:ClearAllPoints()
         kit:SetPoint("CENTER", pin, "CENTER", dx / ks, dy / ks)
@@ -857,6 +1179,26 @@ local function DoLayout()
         end
     end
     pin:SetShown(n >= 2 and not openKey and not D.pinCombatHidden)
+
+    -- Moved that far, the open kit's slots could run off the screen: then
+    -- the pin (and everything on it) moves in for now. Not saved: the next
+    -- layout puts the pin back at its own spot.
+    if inPlaceAt then
+        local api = D.kits[inPlace]
+        local L, R, T, B = 0, 0, 0, 0
+        if api.Reach then L, R, T, B = api.Reach() end
+        local px, py = Center(pin)
+        if px then
+            local W, H, M = UIParent:GetWidth(), UIParent:GetHeight(), 4
+            local fx, fy = px + inPlaceAt[1], py + inPlaceAt[2]
+            local sx = math.max(0, M - (fx - L)) - math.max(0, (fx + R) - (W - M))
+            local sy = math.max(0, M - (fy - B)) - math.max(0, (fy + T) - (H - M))
+            if sx ~= 0 or sy ~= 0 then
+                pin:ClearAllPoints()
+                pin:SetPoint("CENTER", UIParent, "BOTTOMLEFT", px + sx, py + sy)
+            end
+        end
+    end
 end
 
 -- Lays every kit out: floating, on the pin, or on the screen edges.
@@ -907,6 +1249,10 @@ end
 --             takes along that edge, closed or open
 --   name      (optional) shown in the shared Kits menu
 --   edgesOnly (optional) never joins the pin; only snaps to screen edges
+--   Park(on)  (optional) the kit is parked in the top dock (a small button
+--             in a row) or not: hide its pinned slots and extras, and show
+--             them again. Without it a parked kit is fanned upward, which
+--             sends its slots off the top of the screen.
 function D.Register(key, api)
     D.kits[key] = api
     QueueLayout()
@@ -919,14 +1265,34 @@ end
 function D.Opening(key)
     if not D.IsDocked(key) or InCombatLockdown() then return end
     local g = EdgeOf(key)
-    for _, k in ipairs(g and g.keys or DockedKeys()) do
+    local mates = g and g.keys or DockedKeys()
+    if IsParked(key) then mates = ParkedKeys() end -- (parked kits share the top dock)
+    for _, k in ipairs(mates) do
         local api = D.kits[k]
         if k ~= key and api and api.IsOpen() then api.Close() end
     end
     D.Layout()
 end
 
+-- A docked kit opening without taking the pin (First Aid Kit's "open on
+-- combat"): the other kits stay where they are, docked and shrunk, and it
+-- opens full size at its own spot, raised until its open slots clear them.
+-- Kits that hide in combat step out, and the rest close up as a smaller
+-- dock. Ends when the kit closes (D.Closed). Out of combat only: as combat
+-- starts is the last moment (PLAYER_REGEN_DISABLED).
+function D.OpenInPlace(key)
+    if InCombatLockdown() then return end
+    if not PinDocked(key) then return D.Opening(key) end
+    for _, k in ipairs(DockedKeys()) do
+        local api = D.kits[k]
+        if k ~= key and api and api.IsOpen() then api.Close() end
+    end
+    D.inPlace = key
+    D.Layout()
+end
+
 function D.Closed(key)
+    if D.inPlace == key then D.inPlace = nil end
     if D.IsDocked(key) then D.Layout() end
 end
 
@@ -951,6 +1317,13 @@ local function Release(key)
         kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
         api.SaveFree()
     end
+end
+
+-- Takes a kit out of the top dock's list (the caller lays things out).
+local function Unpark(key)
+    local list = Parked()
+    local i = InList(list, key)
+    if i then table.remove(list, i) end
 end
 
 -- Whatever was open closes when kits merge, so the result is in view
@@ -1184,6 +1557,7 @@ local function Signature()
     end
     return table.concat(DockedKeys(), ",") .. "|" .. tostring(db.two) .. "|"
         .. math.floor((p[1] or 0) + 0.5) .. "," .. math.floor((p[2] or 0) + 0.5) .. "|" .. table.concat(e, ";")
+        .. "|" .. table.concat(ParkedKeys(), ",")
 end
 
 -- While you drag a kit (not the open one carrying its dock), the dock
@@ -1201,8 +1575,12 @@ local function Preview(key, cx, cy)
     local target, targetDocked = Resolve(drag, key, cx, cy)
     D.anchor = nil
     D.stay = nil
+    -- Over the top dock: the kit isn't joining anything here (the pin and the
+    -- screen edge step aside), it just leaves what it was on.
+    local inTop = not drag.group and Parkable(key) and TopZone(cx, cy, drag.parked and 0 or 1)
+    if inTop then target = nil end
     -- (Carrying the dock, the edges don't count: the dock just moves.)
-    local side = not drag.group and NearEdge(cx, cy) or nil
+    local side = not drag.group and not inTop and NearEdge(cx, cy) or nil
     if drag.group then
         -- Carrying the dock: only a floating kit is something to merge with;
         -- away from one, the dock just follows along. Until it first meets
@@ -1273,7 +1651,9 @@ local function Watcher()
         if not api then return end
         local cx, cy = Center(api.kit)
         if cx then
-            D.EdgeGlow(not drag.group and NearEdge(cx, cy) or nil, cx, cy)
+            local inTop = not drag.group and Parkable(drag.key) and TopZone(cx, cy, drag.parked and 0 or 1)
+            D.TopHover(inTop)
+            D.EdgeGlow(not drag.group and not inTop and NearEdge(cx, cy) or nil, cx, cy)
             Preview(drag.key, cx, cy)
         end
     end)
@@ -1305,7 +1685,8 @@ function D.DragStart(key)
             if x then centers[k] = { x, y } end
         end
     end
-    D.dragging = { key = key, group = PinDocked(key) and api.IsOpen(), snap = Snapshot(), centers = centers }
+    D.dragging = { key = key, group = PinDocked(key) and api.IsOpen(), snap = Snapshot(), centers = centers,
+        parked = IsParked(key) }
     Watcher():Show()
 end
 
@@ -1315,12 +1696,14 @@ function D.DragStop(key)
     D.dragging = nil
     if D.watch then D.watch:Hide() end
     D.EdgeGlow(nil)
+    D.TopHover(false)
     D.skip = nil
     D.anchor = nil
     D.stay = nil
     local api = D.kits[key]
     local kit = api.kit
     kit:StopMovingOrSizing()
+    if D.top and #ParkedKeys() == 0 then D.top:Hide() end -- (only there as a place to drop)
     if not drag then return end
     local db = DB()
     local cx, cy = Center(kit)
@@ -1329,6 +1712,15 @@ function D.DragStop(key)
         D.Layout()
         return
     end
+    -- Dropped on the top dock: it parks there (or moves along the row).
+    if not drag.group and Parkable(key) and TopZone(cx, cy, drag.parked and 0 or 1) then
+        if drag.snap then Restore(drag.snap) end
+        D.Park(key, ParkIndexAt(key, cx), drag.centers)
+        return
+    end
+    -- Pulled off the top dock: an ordinary drop from here (the pin, an edge,
+    -- or floating where it's let go).
+    if drag.parked then Unpark(key) end
     local target, targetDocked = Resolve(drag, key, cx, cy)
 
     if drag.group then
@@ -1422,6 +1814,7 @@ function D.DockAll(fromKey)
         if #keys > 0 then keep[#keep + 1] = { side = g.side, at = g.at, start = g.start, keys = keys } end
     end
     db.edges = keep
+    db.parked = {} -- parked kits come back to the pin too
     local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
     for k in pairs(D.kits) do if not EdgesOnly(k) then db.docked[k] = true end end
     if not hadPin and fromKey and D.kits[fromKey] then
@@ -1436,11 +1829,83 @@ end
 function D.Undock(key)
     if InCombatLockdown() or not D.kits[key] then return end
     LeaveEdge(key)
+    Unpark(key)
     DB().docked[key] = false
     local api = D.kits[key]
     SetEdge(api, nil)
     SetCompact(api, false)
     D.Layout()
+end
+
+-- Put one kit on the pin (a kit's menu "On the pin"). It joins the others;
+-- with no pin yet, the pin starts where the kit stands.
+function D.Pin(key)
+    local api = D.kits[key]
+    if InCombatLockdown() or not api or EdgesOnly(key) then return end
+    local db = DB()
+    local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
+    local x, y
+    if not hadPin then x, y = Center(api.kit) end
+    LeaveEdge(key)
+    Unpark(key)
+    db.docked[key] = true
+    if x then Pin() SetPinAt(x, y) end
+    D.Layout()
+end
+
+-- Park a kit in the top dock, at slot `at` (the end if not given). Whatever it
+-- was on lets go. For the kits' menus; also what dropping a kit on the dock
+-- does (centers: where the kits were when the drag began). Returns whether it
+-- parked.
+function D.Park(key, at, centers)
+    local api = D.kits[key]
+    if InCombatLockdown() or not api or not Parkable(key) then return false end
+    local db = DB()
+    local pinned = DockedKeys() -- the pin as it is now
+    LeaveEdge(key)
+    local list, rest = {}, {}
+    for _, k in ipairs(Parked()) do
+        if k ~= key then
+            if D.kits[k] and Parkable(k) then list[#list + 1] = k else rest[#rest + 1] = k end
+        end
+    end
+    table.insert(list, math.max(1, math.min(#list + 1, at or #list + 1)), key)
+    for _, k in ipairs(rest) do list[#list + 1] = k end -- (kits not here keep their places)
+    db.parked = list
+    db.docked[key] = false
+    -- A pin can't be one kit: the one left behind floats where it is.
+    local left = {}
+    for _, k in ipairs(pinned) do if k ~= key then left[#left + 1] = k end end
+    if #left == 1 then Release(left[1]) end
+    if centers then KeepSides(centers) end -- out of three: the two left keep their sides
+    if D.top then D.top.hold = GetTime() + 1.5 end -- stays out a moment so you see it arrive
+    D.Layout()
+    return true
+end
+
+-- Take a kit out of the top dock. It floats at its own saved spot.
+function D.Unpark(key)
+    if InCombatLockdown() or not IsParked(key) then return end
+    Unpark(key)
+    D.Layout()
+end
+
+-- Slash command for trying it out: /kitdock park <key>, /kitdock unpark <key>.
+SLASH_KITDOCK1 = "/kitdock"
+SlashCmdList["KITDOCK"] = function(msg)
+    local cmd, key = (msg or ""):match("^%s*(%S*)%s*(%S*)")
+    cmd = (cmd or ""):lower()
+    local function say(text) DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Kit Dock:|r " .. text) end
+    if cmd == "park" and D.kits[key] then
+        if not D.Park(key) then say("can't park " .. key .. " (in combat, or it's an edges-only kit)") end
+    elseif cmd == "unpark" and D.kits[key] then
+        D.Unpark(key)
+    else
+        local keys = {}
+        for k in pairs(D.kits) do keys[#keys + 1] = k end
+        table.sort(keys)
+        say("/kitdock park <kit> or /kitdock unpark <kit>. Kits here: " .. table.concat(keys, ", "))
+    end
 end
 
 -- Put the pin back in the middle of the screen.
@@ -1669,6 +2134,7 @@ watcher:SetScript("OnEvent", function(_, event)
             D.pin:Hide()
         end
     else
+        for kit in pairs(tweens) do StopTween(kit) end -- any frozen by combat
         local hidden = D.pinCombatHidden
         D.pinCombatHidden = nil
         if D.pending or hidden then D.Layout() end
