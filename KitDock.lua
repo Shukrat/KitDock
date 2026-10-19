@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 20
+local VERSION = 21
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -337,6 +337,9 @@ end
 D.StopTween = StopTween
 
 tweener:SetScript("OnUpdate", function(self, dt)
+    -- Kit buttons are secure: once combat has locked them, a glide can't
+    -- move or scale them. Freeze here; combat's end puts them in place.
+    if InCombatLockdown() then self:Hide() return end
     local any = false
     for kit, tw in pairs(tweens) do
         tw.t = tw.t + dt
@@ -1802,6 +1805,7 @@ watcher:SetScript("OnEvent", function(_, event)
             D.pin:Hide()
         end
     else
+        for kit in pairs(tweens) do StopTween(kit) end -- any frozen by combat
         local hidden = D.pinCombatHidden
         D.pinCombatHidden = nil
         if D.pending or hidden then D.Layout() end
