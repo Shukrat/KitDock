@@ -1701,6 +1701,22 @@ function D.Undock(key)
     D.Layout()
 end
 
+-- Put one kit on the pin (a kit's menu "On the pin"). It joins the others;
+-- with no pin yet, the pin starts where the kit stands.
+function D.Pin(key)
+    local api = D.kits[key]
+    if InCombatLockdown() or not api or EdgesOnly(key) then return end
+    local db = DB()
+    local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
+    local x, y
+    if not hadPin then x, y = Center(api.kit) end
+    LeaveEdge(key)
+    Unpark(key)
+    db.docked[key] = true
+    if x then Pin() SetPinAt(x, y) end
+    D.Layout()
+end
+
 -- Park a kit in the top dock, at slot `at` (the end if not given). Whatever it
 -- was on lets go. For the kits' menus; also what dropping a kit on the dock
 -- does (centers: where the kits were when the drag began). Returns whether it
