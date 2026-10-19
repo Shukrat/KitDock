@@ -27,7 +27,7 @@ local addonName, ns = ...
 -- kits never merge with it.
 ---------------------------------------------------------------------------
 
-local VERSION = 18
+local VERSION = 19
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
