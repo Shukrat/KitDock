@@ -59,7 +59,8 @@ local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and d
 -- The top dock (UI units).
 local PARK_SIZE = 34     -- a parked kit's button on screen
 local PARK_GAP = 11      -- between parked kits
-local PARK_PAD = 18      -- from the pill's ends to the first and last kit
+local PARK_PAD = 18      -- from the box's ends to the first and last kit
+local PARK_GRIP = 22     -- extra room at the box's start end for its grip (the pin's stud)
 local PARK_H = 50        -- the pill's height
 local PARK_TUCK = 26     -- tucked: the box's outer edge sits this far past the screen's, so half of it shows
 local PARK_SHOW = -10    -- out: the box's outer edge sits this far inside the screen's edge
@@ -792,10 +793,13 @@ local function BoxNow()
     return p.side, p.at
 end
 
+-- The box's length for n kits: the row, plus room for its grip.
+local function BoxLong(n) return TopWidth(n) + PARK_GRIP end
+
 -- Its middle along its side for n kits, kept on screen.
 local function BoxAlong(side, at, n)
     local L = AlongLen(side)
-    local half = TopWidth(n) / 2
+    local half = BoxLong(n) / 2
     return math.max(half + 8, math.min(L - half - 8, at or L / 2))
 end
 
@@ -836,8 +840,14 @@ local function BoxPoint(f)
     local a = BoxAlong(side, at, n)
     if f.drawn == side .. a .. ":" .. n .. ":" .. f.off then return end
     f.drawn = side .. a .. ":" .. n .. ":" .. f.off
-    local long = TopWidth(n)
+    local long = BoxLong(n)
     if Vert(side) then f:SetSize(PARK_H, long) else f:SetSize(long, PARK_H) end
+    if f.grip then -- at the start end: the left, or the top on the sides
+        local g = long / 2 - PARK_GRIP / 2 - 6
+        f.grip:ClearAllPoints()
+        if Vert(side) then f.grip:SetPoint("CENTER", f, "CENTER", 0, g)
+        else f.grip:SetPoint("CENTER", f, "CENTER", -g, 0) end
+    end
     local off = f.off
     f:ClearAllPoints()
     if side == "top" then f:SetPoint("TOP", UIParent, "TOPLEFT", a, off)
@@ -909,21 +919,53 @@ local function TopDock()
     f.n = 1
     BoxPoint(f)
     TopLook(f, false)
-    -- Drag the box to move it to another edge (the kits in it come along).
-    f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", function()
+    -- Drag the box (by its grip, or its edges) to move it anywhere along
+    -- any screen edge; the kits in it come along.
+    local function DragStart()
         if InCombatLockdown() then return end
         D.boxDragging = true
-    end)
-    f:SetScript("OnDragStop", function()
+    end
+    local function DragStop()
         if not D.boxDragging then return end
         D.boxDragging = nil
         local p = D.boxPreview
         D.boxPreview = nil
         if p then DB().box = { side = p.side, at = p.at } end
         if not InCombatLockdown() then D.Layout() end
+    end
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", DragStart)
+    f:SetScript("OnDragStop", DragStop)
+    -- The grip: the same gold stud as the pin, glowing under the mouse.
+    local g = CreateFrame("Button", nil, f)
+    g:SetSize(20, 20)
+    g:SetFrameLevel(f:GetFrameLevel() + 5)
+    g:RegisterForDrag("LeftButton")
+    g.tex = g:CreateTexture(nil, "ARTWORK")
+    g.tex:SetAllPoints()
+    g.tex:SetTexture(D.media .. "pin_dot", nil, nil, "LINEAR")
+    g.hl = g:CreateTexture(nil, "HIGHLIGHT")
+    g.hl:SetTexture(D.media .. "glow_ring")
+    g.hl:SetBlendMode("ADD")
+    g.hl:SetPoint("CENTER")
+    g.hl:SetSize(30, 30)
+    g:SetScript("OnDragStart", DragStart)
+    g:SetScript("OnDragStop", DragStop)
+    g:SetScript("OnEnter", function(self)
+        if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
+        GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+        GameTooltip:AddLine("Move the kit box")
+        GameTooltip:AddLine("Drag to put it anywhere along any edge of the screen.", 1, 1, 1, true)
+        GameTooltip:Show()
     end)
+    g:SetScript("OnLeave", function()
+        if ResetCursor then pcall(ResetCursor) end
+        GameTooltip:Hide()
+    end)
+    f.grip = g
+    f.drawn = nil
+    BoxPoint(f)
     f:SetScript("OnUpdate", TopTick)
     f:Hide()
     D.top = f
@@ -937,7 +979,7 @@ local function TopZone(cx, cy, extra)
     local side, at = BoxNow()
     local n = #ParkedKeys() + (extra or 0)
     local a = BoxAlong(side, at, n)
-    return math.abs(AlongOf(side, cx, cy) - a) <= TopWidth(n) / 2 + 50 and Depth(side, cx, cy) <= PARK_H + 60
+    return math.abs(AlongOf(side, cx, cy) - a) <= BoxLong(n) / 2 + 50 and Depth(side, cx, cy) <= PARK_H + 60
 end
 
 -- Which slot a kit dropped at (x, y) would take.
@@ -946,7 +988,7 @@ local function ParkIndexAt(key, cx, cy)
     for _, k in ipairs(ParkedKeys()) do if k ~= key then others = others + 1 end end
     local m = others + 1
     local side, at = BoxNow()
-    local lo = BoxAlong(side, at, m) - TopWidth(m) / 2
+    local lo = BoxAlong(side, at, m) - BoxLong(m) / 2 + PARK_GRIP -- (past the grip)
     local i = math.floor((AlongOf(side, cx, cy) - lo - PARK_PAD + (PARK_SIZE + PARK_GAP) / 2) / (PARK_SIZE + PARK_GAP)) + 1
     return math.max(1, math.min(m, i))
 end
@@ -1032,7 +1074,7 @@ local function LayoutParked(before)
             SetParked(api, true, side)
             SetEdge(api, nil)
             local ks = kit:GetScale()
-            local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP)
+            local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP) + PARK_GRIP / 2 -- (clear of the grip)
             local ox, oy = d, 0
             if Vert(side) then ox, oy = 0, -d end -- top to bottom down the side
             kit:ClearAllPoints()
