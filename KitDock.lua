@@ -32,9 +32,12 @@ local addonName, ns = ...
 -- row); drag it off to take it out again, back to its own saved spot if you
 -- let go on nothing. Drag the pin (or the open kit carrying it) to a screen
 -- edge and the box shows there, lit: let go and every pinned kit tucks into
--- it, and the box stays on that edge. Drag the box itself to move it to any
--- edge. There's one box. Edges-only kits stay out of it. Like everything
--- else here it only moves out of combat: in combat it stays as it was.
+-- it, and the box stays on that edge. Drag the box by its grip (the pin's
+-- stud) to move it anywhere along any edge; drag the grip away from the
+-- edges and it becomes the pin again, taking every kit that can go on the
+-- pin with it (edges-only kits stay in the box). There's one box. Like
+-- everything else here it only moves out of combat: in combat it stays as
+-- it was.
 ---------------------------------------------------------------------------
 
 local VERSION = 22
@@ -108,9 +111,10 @@ local function IsParked(k)
     return InList(Parked(), k) ~= nil
 end
 
--- A kit that can park: any that can go on the pin (edges-only kits stay out).
+-- A kit that can park: any kit, edges-only ones included (the box is on an
+-- edge too).
 local function Parkable(k)
-    return Shown(k) and not EdgesOnly(k)
+    return Shown(k)
 end
 
 -- The parked kits that are loaded and showing, in order.
@@ -865,15 +869,25 @@ end
 -- Slides the box out or in. Nothing moves in combat: it stays as it was.
 local function TopTick(f, dt)
     if InCombatLockdown() or not f:IsShown() then return end
-    -- Dragging the box itself: it follows the cursor round the screen edges.
+    -- Dragging the box by its grip: it follows the cursor round the screen
+    -- edges. Pulled away from them, the grip becomes the pin: the kits that
+    -- can go on the pin come out onto it under the cursor, and the box stays
+    -- where it was with whatever's left (edges-only kits).
     if D.boxDragging then
         local s = UIParent:GetEffectiveScale()
         local x, y = GetCursorPosition()
         x, y = x / s, y / s
         local side = NearestSide(x, y)
-        local was = D.boxPreview and D.boxPreview.side
-        D.boxPreview = { side = side, at = AlongOf(side, x, y) }
-        if was ~= side then D.Layout() end -- the row turns with the side
+        local away = Depth(side, x, y) > EDGE_REACH
+        if away and (D.boxToPin or D.BoxPinKeys()[1]) then
+            if not D.boxToPin then D.BoxToPin(true, x, y) end
+            D.MoveFreed(x, y)
+        else
+            if D.boxToPin then D.BoxToPin(false) end
+            local was = D.boxPreview and D.boxPreview.side
+            D.boxPreview = { side = side, at = AlongOf(side, x, y) }
+            if was ~= side then D.Layout() end -- the row turns with the side
+        end
     end
     local want = Over(f) or D.topOver or D.boxDragging
     if not want then
@@ -930,7 +944,11 @@ local function TopDock()
         D.boxDragging = nil
         local p = D.boxPreview
         D.boxPreview = nil
-        if p then DB().box = { side = p.side, at = p.at } end
+        if D.boxToPin then -- let go away from the edges: they stay on the pin
+            D.FreedDrop()
+        elseif p then
+            DB().box = { side = p.side, at = p.at }
+        end
         if not InCombatLockdown() then D.Layout() end
     end
     f:EnableMouse(true)
@@ -1023,6 +1041,81 @@ function D.BoxPreview(side, x, y, extra)
     end
 end
 
+-- The kits in the box that can go on the pin (not edges-only ones).
+function D.BoxPinKeys()
+    local keys = {}
+    for _, k in ipairs(ParkedKeys()) do if not EdgesOnly(k) then keys[#keys + 1] = k end end
+    return keys
+end
+
+-- The box's grip pulled away from the edges (on), or back to them (off):
+-- the kits that can go on the pin come out of the box onto it, at (x, y),
+-- or go back in. What they were is kept so dragging back undoes it.
+function D.BoxToPin(on, x, y)
+    local db = DB()
+    if on then
+        local keys = D.BoxPinKeys()
+        local undo = { parked = { unpack(db.parked) }, docked = {}, keys = keys,
+            pin = db.pin and { db.pin[1], db.pin[2] } or nil }
+        for _, k in ipairs(keys) do undo.docked[k] = db.docked[k] end
+        local keep = {}
+        for _, k in ipairs(db.parked) do if not InList(keys, k) then keep[#keep + 1] = k end end
+        db.parked = keep
+        for _, k in ipairs(keys) do db.docked[k] = true end
+        D.boxToPin = undo
+        D.boxPreview = nil
+        Pin()
+        SetPinAt(x, y)
+        D.Layout()
+    elseif D.boxToPin then
+        local undo = D.boxToPin
+        D.boxToPin = nil
+        db.parked = undo.parked
+        for _, k in ipairs(undo.keys) do db.docked[k] = undo.docked[k] end
+        db.pin = undo.pin
+        D.Layout()
+    end
+end
+
+-- Keeps what came out of the box under the cursor: the pin, or a lone kit
+-- (a pin can't be one kit, so one kit just floats).
+function D.MoveFreed(x, y)
+    local u = D.boxToPin
+    if not u then return end
+    if PinDocked(u.keys[1]) then
+        SetPinAt(x, y)
+    else
+        for _, k in ipairs(u.keys) do
+            local kit = D.kits[k] and D.kits[k].kit
+            if kit and not PinDocked(k) then
+                StopTween(kit)
+                local s = kit:GetEffectiveScale() / UIParent:GetEffectiveScale()
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
+            end
+        end
+    end
+end
+
+-- Let go away from the edges: what came out stays out, the pin (or a lone
+-- kit) right where it was dropped.
+function D.FreedDrop()
+    local u = D.boxToPin
+    D.boxToPin = nil
+    if not u then return end
+    if PinDocked(u.keys[1]) then
+        SavePin()
+    else
+        for _, k in ipairs(u.keys) do
+            local api = D.kits[k]
+            if api then
+                DB().docked[k] = false
+                api.SaveFree()
+            end
+        end
+    end
+end
+
 -- Which way a kit without Park is fanned so its slots go off the screen.
 local FAN = { top = 90, bottom = 270, left = 180, right = 0 }
 
@@ -1056,7 +1149,7 @@ end
 local function LayoutParked(before)
     local keys = ParkedKeys()
     local n = #keys
-    if n == 0 and not D.topOver then
+    if n == 0 and not D.topOver and not D.boxDragging then
         if D.top then D.top:Hide() end
         return
     end
@@ -1990,7 +2083,9 @@ function D.DockAll(fromKey)
         if #keys > 0 then keep[#keep + 1] = { side = g.side, at = g.at, start = g.start, keys = keys } end
     end
     db.edges = keep
-    db.parked = {} -- parked kits come back to the pin too
+    local boxed = {} -- parked kits come back to the pin too (edges-only ones stay in the box)
+    for _, k in ipairs(Parked()) do if EdgesOnly(k) then boxed[#boxed + 1] = k end end
+    db.parked = boxed
     local hadPin = db.pin and db.pin[1] and db.pin[2] and #DockedKeys() > 0
     for k in pairs(D.kits) do if not EdgesOnly(k) then db.docked[k] = true end end
     if not hadPin and fromKey and D.kits[fromKey] then
