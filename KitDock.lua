@@ -68,12 +68,13 @@ local SNAP = 105 -- how close (UI units) a kit must come to merge (preview and d
 
 -- The top dock (UI units).
 local PARK_SIZE = 34     -- a parked kit's button on screen
-local PARK_GAP = 11      -- between parked kits
-local PARK_PAD = 18      -- from the box's ends to the first and last kit
-local PARK_GRIP = 22     -- extra room at the box's start end for its grip (the pin's stud)
+local PARK_GAP = 8       -- between parked kits
+local PARK_PAD = 8       -- from the box's ends to the first and last kit
 local PARK_H = 50        -- the pill's height
 local PARK_TUCK = 26     -- tucked: the box's outer edge sits this far past the screen's, so half of it shows
-local PARK_SHOW = -10    -- out: the box's outer edge sits this far inside the screen's edge
+local PARK_SHOW = 8      -- out: still this far past the screen's edge (no gap to fall into), its kits all in view
+local GRIP_SMALL, GRIP_BIG = 8, 18 -- the grip: a small dot on the box's corner, bigger under the mouse
+local NOTE_GAP = 4       -- between the reminders in a box's row
 local PARK_SLIDE = 0.18  -- seconds to slide
 local PARK_LINGER = 0.35 -- seconds the mouse has to be away before it tucks again
 
@@ -303,7 +304,10 @@ local function Pin()
     end)
     p:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
-        if not D.PinDragStop() then SavePin() end
+        if not D.PinDragStop() then
+            SavePin()
+            D.Layout() -- (puts back the room its kits need from the edges)
+        end
     end)
     p:SetScript("OnEnter", function(self)
         if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
@@ -905,8 +909,8 @@ end
 
 local function Vert(side) return side == "left" or side == "right" end
 
--- A box's length for n kits: the row, plus room for its grip.
-local function BoxLong(n) return TopWidth(n) + PARK_GRIP end
+-- A box's length for n kits: just the row (the grip sits on its corner).
+local function BoxLong(n) return TopWidth(n) end
 
 -- Its middle along its side for n kits, kept on screen.
 local function BoxAlong(side, at, n)
@@ -970,11 +974,10 @@ local function BoxPoint(f)
     f.drawn = key
     local long = BoxLong(n)
     if Vert(side) then f:SetSize(PARK_H, long) else f:SetSize(long, PARK_H) end
-    if f.grip then -- at the start end: the left, or the top on the sides
-        local g = long / 2 - PARK_GRIP / 2 - 6
+    if f.grip then -- on the inner corner at the start end (the left, or the top on the sides)
+        local CORNER = { top = "BOTTOMLEFT", bottom = "TOPLEFT", left = "TOPRIGHT", right = "TOPLEFT" }
         f.grip:ClearAllPoints()
-        if Vert(side) then f.grip:SetPoint("CENTER", f, "CENTER", 0, g)
-        else f.grip:SetPoint("CENTER", f, "CENTER", -g, 0) end
+        f.grip:SetPoint("CENTER", f, CORNER[side] or "BOTTOMLEFT", 0, 0)
     end
     local off = f.off
     f:ClearAllPoints()
@@ -1034,7 +1037,7 @@ local function ParkIndexAt(b, key, cx, cy)
     local others = 0
     for _, k in ipairs(BoxKeys(b)) do if k ~= key then others = others + 1 end end
     local m = others + 1
-    local lo = BoxAlong(b.side, b.at, m) - BoxLong(m) / 2 + PARK_GRIP -- (past the grip)
+    local lo = BoxAlong(b.side, b.at, m) - BoxLong(m) / 2
     local i = math.floor((AlongOf(b.side, cx, cy) - lo - PARK_PAD + (PARK_SIZE + PARK_GAP) / 2) / (PARK_SIZE + PARK_GAP)) + 1
     return math.max(1, math.min(m, i))
 end
@@ -1094,8 +1097,14 @@ local function TopTick(f, dt)
             if was ~= side then D.Layout() end -- the row turns with the side
         end
     end
+    -- Its kits all pulled out onto the pin: the box goes (it's gone for good
+    -- on letting go; dragging back to an edge brings it back).
+    if not f.ghost then
+        local gone = f.toPin and #BoxKeys(f.box) == 0
+        f:SetAlpha(gone and 0 or 1)
+    end
     local hovered = D.hover and D.hover.box == f.box
-    local want = f.ghost or Over(f) or hovered or f.dragging or BoxOpen(f.box)
+    local want = f.ghost or Over(f) or (f.grip and Over(f.grip)) or hovered or f.dragging or BoxOpen(f.box)
     if not want and f.hold and GetTime() < f.hold then want = true end
     if want then
         f.linger = 0
@@ -1153,7 +1162,8 @@ local function NewBoxFrame(ghost)
         f:SetScript("OnDragStop", DragStop)
         -- The grip: the same gold stud as the pin, glowing under the mouse.
         local g = CreateFrame("Button", nil, f)
-        g:SetSize(20, 20)
+        g:SetSize(GRIP_SMALL, GRIP_SMALL)
+        if g.SetHitRectInsets then g:SetHitRectInsets(-6, -6, -6, -6) end -- (easier to catch than it looks)
         g:SetFrameLevel(f:GetFrameLevel() + 5)
         g:RegisterForDrag("LeftButton")
         g.tex = g:CreateTexture(nil, "ARTWORK")
@@ -1163,17 +1173,19 @@ local function NewBoxFrame(ghost)
         g.hl:SetTexture(D.media .. "glow_ring")
         g.hl:SetBlendMode("ADD")
         g.hl:SetPoint("CENTER")
-        g.hl:SetSize(30, 30)
+        g.hl:SetSize(GRIP_BIG * 1.5, GRIP_BIG * 1.5)
         g:SetScript("OnDragStart", DragStart)
         g:SetScript("OnDragStop", DragStop)
         g:SetScript("OnEnter", function(self)
+            self:SetSize(GRIP_BIG, GRIP_BIG)
             if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
             GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
             GameTooltip:AddLine("Move the kit box")
             GameTooltip:AddLine("Drag along any edge of the screen. Drop it on another box to merge them; drag it away from the edge to put its kits back on the pin.", 1, 1, 1, true)
             GameTooltip:Show()
         end)
-        g:SetScript("OnLeave", function()
+        g:SetScript("OnLeave", function(self)
+            if not f.dragging then self:SetSize(GRIP_SMALL, GRIP_SMALL) end
             if ResetCursor then pcall(ResetCursor) end
             GameTooltip:Hide()
         end)
@@ -1295,6 +1307,7 @@ end
 BoxDrop = function(f)
     if not f.dragging then return end
     f.dragging = nil
+    if f.grip and not Over(f.grip) then f.grip:SetSize(GRIP_SMALL, GRIP_SMALL) end
     D.dragBox = nil
     D.hover = nil
     local b, p = f.box, f.preview
@@ -1371,7 +1384,7 @@ local function LayoutBoxKits(f, keys, before)
         if k ~= D.skip then -- (not the one under the cursor)
             StopTween(kit)
             if api.BeginMove then api.BeginMove() end
-            local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP) + PARK_GRIP / 2 -- (clear of the grip)
+            local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP)
             local ax, ay = d, 0
             if Vert(side) then ax, ay = 0, -d end -- top to bottom down the side
             SetClamp(api, false)
@@ -1397,6 +1410,71 @@ local function LayoutBoxKits(f, keys, before)
     end
 end
 
+-- What each boxed kit shows while closed (reminders, pinned slots), handed
+-- over by the kit (Kit Core's PlaceSlots): D.notices[key] = { frame, ... }.
+D.notices = D.notices or {}
+
+-- A box's row of reminders: everything its closed kits show, side by side
+-- in one line just inside the box, in the kits' order. While a kit from the
+-- box is open, they all hide (fr.quiet), and come back when it closes.
+local function RelayNotices(fr)
+    local b = fr.box
+    if not b then return end
+    local side = BoxNow(fr)
+    local items = {}
+    for _, k in ipairs(BoxKeys(b)) do
+        local api = D.kits[k]
+        local list = D.notices[k]
+        if list and api.parked and not api.IsOpen() then
+            for _, f in ipairs(list) do
+                if f:IsShown() and not InList(items, f) then items[#items + 1] = f end
+            end
+        end
+    end
+    local function Frozen(f) return InCombatLockdown() and f.IsProtected and f:IsProtected() end
+    if BoxOpen(b) then
+        for _, f in ipairs(items) do
+            if not Frozen(f) then f:Hide() end
+        end
+        fr.quiet = true
+        return
+    end
+    local ui = UIParent:GetEffectiveScale()
+    local sizes, total = {}, 0
+    for i, f in ipairs(items) do
+        local w = f:GetWidth() * f:GetEffectiveScale() / ui
+        sizes[i] = w
+        total = total + w + (i > 1 and NOTE_GAP or 0)
+    end
+    local o = OUTWARD[side] or OUTWARD.top
+    local a = -total / 2
+    for i, f in ipairs(items) do
+        local w = sizes[i]
+        local along = a + w / 2
+        local depth = PARK_H / 2 + NOTE_GAP + w / 2 -- (inward from the box's middle)
+        local x, y
+        if Vert(side) then x, y = -o[1] * depth, -along else x, y = along, -o[2] * depth end
+        if not Frozen(f) then
+            local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
+            StopTween(f)
+            f:ClearAllPoints()
+            f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
+            f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
+        end
+        a = a + w + NOTE_GAP
+    end
+end
+
+-- For the kits: what a boxed kit shows now, in order.
+function D.BoxNotices(key, list)
+    D.notices[key] = list
+    local b = BoxOf(key)
+    if not b then return end
+    for _, fr in ipairs(D.boxFrames) do
+        if fr.box == b and fr:IsShown() then return RelayNotices(fr) end
+    end
+end
+
 -- Every box drawn by a frame (each keeps its frame from one layout to the
 -- next, so it doesn't jump), and its kits laid out in it.
 local function LayoutBoxes(before)
@@ -1417,8 +1495,12 @@ local function LayoutBoxes(before)
             end
             f = f or NewBoxFrame()
             f.box, f.preview, f.toPin, f.drawn = b, nil, nil, nil
-            f.off = PARK_TUCK
-            f.hold = GetTime() + 1.5 -- a new box stays out a moment so you see it arrive
+            -- A new box starts out (and stays out a moment, so you see it
+            -- arrive): the kits gliding into it land where it stays, not
+            -- where it was part-way through sliding.
+            f.off = PARK_SHOW
+            f.out = true
+            f.hold = GetTime() + 1.5
             used[b] = f
         end
     end
@@ -1434,6 +1516,15 @@ local function LayoutBoxes(before)
             BoxPoint(f)
             f:Show()
             LayoutBoxKits(f, keys, before)
+            if f.quiet and not BoxOpen(b) then
+                -- A kit from the box just closed: the others' reminders come back.
+                f.quiet = nil
+                for _, k in ipairs(keys) do
+                    local api = D.kits[k]
+                    if api.Refresh then api.Refresh() end
+                end
+            end
+            RelayNotices(f)
         end
     end
 end
@@ -1572,10 +1663,12 @@ local function DoLayout()
         end
     end
     local hw = pin:GetWidth() / 2
-    if pin.SetClampRectInsets then
+    -- (not while the pin itself is dragged: it has to reach the edges, to
+    -- tuck its kits into a box there)
+    if pin.SetClampRectInsets and not D.pinDrag then
         pin:SetClampRectInsets(-math.max(0, L - hw), math.max(0, R - hw), math.max(0, T - hw), -math.max(0, B - hw))
     end
-    do
+    if not D.pinDrag then
         local px, py = Center(pin)
         if px then
             local W, H = UIParent:GetWidth(), UIParent:GetHeight()
@@ -2632,6 +2725,9 @@ end
 function D.PinDragStart()
     if InCombatLockdown() then return end
     D.pinDrag = { snap = Snapshot(), keys = DockedKeys() }
+    -- Free to reach the edges while it's dragged (the next layout puts back
+    -- the room the open kits need).
+    if D.pin and D.pin.SetClampRectInsets then D.pin:SetClampRectInsets(0, 0, 0, 0) end
     local w = D.pinWatch
     if not w then
         w = CreateFrame("Frame")
