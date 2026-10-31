@@ -75,6 +75,7 @@ local PARK_TUCK = 26     -- tucked: the box's outer edge sits this far past the 
 local PARK_SHOW = 8      -- out: still this far past the screen's edge (no gap to fall into), its kits all in view
 local GRIP_SMALL, GRIP_BIG = 8, 18 -- the grip: a small dot on the box's corner, bigger under the mouse
 local NOTE_GAP = 4       -- between the reminders in a box's row
+local NOTE_ROW = 6       -- at most this many in a row; more start another row further in
 local PARK_SLIDE = 0.18  -- seconds to slide
 local PARK_LINGER = 0.35 -- seconds the mouse has to be away before it tucks again
 
@@ -1089,9 +1090,11 @@ local function TopTick(f, dt)
             D.MoveFreed(f, x, y)
             D.hover = nil
         else
-            if f.toPin then D.BoxToPin(f, false) end
             local was = f.preview and f.preview.side or f.box.side
             f.preview = { side = side, at = AlongOf(side, x, y) }
+            -- (the box is already where the cursor is when its kits go back
+            -- in, so they glide there, not to where it started)
+            if f.toPin then D.BoxToPin(f, false) was = side end
             local other = BoxAt(x, y, f.box, #BoxKeys(f.box))
             D.hover = other and { box = other, extra = #BoxKeys(f.box) } or nil
             if was ~= side then D.Layout() end -- the row turns with the side
@@ -1248,7 +1251,6 @@ function D.BoxToPin(f, on, x, y)
         b.keys = keep
         for _, k in ipairs(keys) do db.docked[k] = true end
         f.toPin = undo
-        f.preview = nil
         Pin()
         SetPinAt(x, y)
         D.Layout()
@@ -1258,6 +1260,8 @@ function D.BoxToPin(f, on, x, y)
         b.keys = undo.boxKeys
         for _, k in ipairs(undo.keys) do db.docked[k] = undo.docked[k] end
         db.pin = undo.pin
+        f.drawn = nil
+        BoxPoint(f) -- (where it's being dragged to now, before its kits are laid out in it)
         D.Layout()
     end
 end
@@ -1440,28 +1444,36 @@ local function RelayNotices(fr)
         return
     end
     local ui = UIParent:GetEffectiveScale()
-    local sizes, total = {}, 0
-    for i, f in ipairs(items) do
-        local w = f:GetWidth() * f:GetEffectiveScale() / ui
-        sizes[i] = w
-        total = total + w + (i > 1 and NOTE_GAP or 0)
-    end
     local o = OUTWARD[side] or OUTWARD.top
-    local a = -total / 2
-    for i, f in ipairs(items) do
-        local w = sizes[i]
-        local along = a + w / 2
-        local depth = PARK_H / 2 + NOTE_GAP + w / 2 -- (inward from the box's middle)
-        local x, y
-        if Vert(side) then x, y = -o[1] * depth, -along else x, y = along, -o[2] * depth end
-        if not Frozen(f) then
-            local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
-            StopTween(f)
-            f:ClearAllPoints()
-            f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
-            f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
+    local inner = PARK_H / 2 + NOTE_GAP -- (from the box's middle to where the first row starts)
+    -- In rows of up to NOTE_ROW, each centred on the box, row after row inward.
+    for first = 1, #items, NOTE_ROW do
+        local last = math.min(#items, first + NOTE_ROW - 1)
+        local sizes, total, deep = {}, 0, 0
+        for i = first, last do
+            local f = items[i]
+            local w = f:GetWidth() * f:GetEffectiveScale() / ui
+            sizes[i] = w
+            total = total + w + (i > first and NOTE_GAP or 0)
+            deep = math.max(deep, w)
         end
-        a = a + w + NOTE_GAP
+        local a = -total / 2
+        for i = first, last do
+            local f, w = items[i], sizes[i]
+            local along = a + w / 2
+            local depth = inner + deep / 2 -- (inward from the box's middle)
+            local x, y
+            if Vert(side) then x, y = -o[1] * depth, -along else x, y = along, -o[2] * depth end
+            if not Frozen(f) then
+                local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
+                StopTween(f)
+                f:ClearAllPoints()
+                f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
+                f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
+            end
+            a = a + w + NOTE_GAP
+        end
+        inner = inner + deep + NOTE_GAP
     end
 end
 
