@@ -442,6 +442,15 @@ local function StopTween(kit)
 end
 D.StopTween = StopTween
 
+-- A kit button's scale as it will be: where a glide is taking it (it grows
+-- or shrinks along the way), or as it is. Kit Core sizes the slots round it
+-- from this, so they're placed for the button's real size, not part-way.
+function D.ScaleOf(kit)
+    local tw = tweens[kit]
+    if tw and not tw.byOffset and tw.es then return tw.es end
+    return kit:GetScale()
+end
+
 tweener:SetScript("OnUpdate", function(self, dt)
     -- Kit buttons are secure: once combat has locked them, a glide can't
     -- move or scale them. Freeze here; combat's end puts them in place.
