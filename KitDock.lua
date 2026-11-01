@@ -1396,28 +1396,57 @@ local function LayoutBoxKits(f, keys, before)
         local kit = api.kit
         if k ~= D.skip then -- (not the one under the cursor)
             StopTween(kit)
+            local open = api.IsOpen()
+            local stepping = open and api.parked -- (just opened: it steps out of the box now)
+            if stepping then
+                -- Its reminders leave the box's row: hidden for a moment, so
+                -- they come back at their own spots by the kit (fading in, or
+                -- sliding out with its slots) instead of gliding across it.
+                local own = D.notices[k]
+                D.notices[k] = nil
+                for _, nf in ipairs(own or {}) do
+                    StopTween(nf)
+                    nf:Hide()
+                end
+            end
             if api.BeginMove then api.BeginMove() end
             local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP)
             local ax, ay = d, 0
             if Vert(side) then ax, ay = 0, -d end -- top to bottom down the side
             SetClamp(api, false)
-            if api.IsOpen() then
-                ClearParked(api)
+            if open then
+                -- Full size first, so everything it lays out is for that size.
                 SetCompact(api, false)
+                ClearParked(api)
                 SetEdge(api, side)
+                -- Its own spot just inside the box (where the box is all the
+                -- way out), not hung on the box: the box slides, the kit stays.
+                f.off, f.out, f.linger, f.drawn = PARK_SHOW, true, 0, nil
+                BoxPoint(f)
+                local bx, by = Center(f)
                 local o = OUTWARD[side] or OUTWARD.top
                 local inward = PARK_H / 2 + 6 + KitHalf(api)
-                ax, ay = ax - o[1] * inward, ay - o[2] * inward
+                local x, y = (bx or 0) + ax - o[1] * inward, (by or 0) + ay - o[2] * inward
+                local s = kit:GetEffectiveScale() / UIParent:GetEffectiveScale()
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
+                api.Tuck(false)
+                if stepping then
+                    D.Fade(kit, false) -- grows in where it stands; its slots slide out from it
+                else
+                    local b = before[k]
+                    if b then KitGlide(kit, b[1], b[2], b[3]) end
+                end
             else
                 SetParked(api, true, side)
                 SetEdge(api, side)
+                local ks = kit:GetScale()
+                kit:ClearAllPoints()
+                kit:SetPoint("CENTER", f, "CENTER", ax / ks, ay / ks)
+                api.Tuck(false)
+                local b = before[k]
+                if b then KitGlide(kit, b[1], b[2], b[3]) end
             end
-            local ks = kit:GetScale()
-            kit:ClearAllPoints()
-            kit:SetPoint("CENTER", f, "CENTER", ax / ks, ay / ks)
-            api.Tuck(false)
-            local b = before[k]
-            if b then KitGlide(kit, b[1], b[2], b[3]) end
             if api.EndMove then api.EndMove() end
         end
     end
