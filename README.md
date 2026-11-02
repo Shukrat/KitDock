@@ -6,6 +6,12 @@ With two or more kits installed, their buttons snap together on a small gold pin
 
 A kit can also register as **edges only** (`edgesOnly = true`, like Warlock Kit): it snaps to the screen edges and shows in the shared Kits menu, but never joins the pin and other kits never merge with it.
 
+## Top dock (v19)
+
+A second, smaller dock sits at the top middle of the screen, tucked half off the top edge. Move the cursor over it and it slides down; move away and it tucks back. Drag a kit onto it (or use `/kitdock park <kit>`) to park the kit as a small button in the row; click the button to bring the kit out, and drag it off (or `/kitdock unpark <kit>`) to take it out of the dock. Every kit that can join the pin can park, and nothing changes until a kit is parked. Edges-only kits (Warlock Kit, Shaman Kit) are left out.
+
+A kit can register an optional `Park(on)` function to hide or show its pinned slots while parked. Without it the kit is fanned upward, which sends its slots off the top of the screen. The dock only moves out of combat.
+
 ## How the kits use it
 
 Each kit's `.pkgmeta` pulls this repository into `Libs/KitDock` when a release is built, pinned to a tag:
