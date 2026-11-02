@@ -986,10 +986,15 @@ local function BoxPoint(f)
     f.drawn = key
     local long = BoxLong(n)
     if Vert(side) then f:SetSize(PARK_H, long) else f:SetSize(long, PARK_H) end
-    if f.grip then -- on the inner corner at the start end (the left, or the top on the sides)
-        local CORNER = { top = "BOTTOMLEFT", bottom = "TOPLEFT", left = "TOPRIGHT", right = "TOPLEFT" }
+    if f.grip then
+        -- In the middle of the box's inner edge, just inside its border, so
+        -- the mouse is still over the box while it's on the grip (on the
+        -- corner, the box could slide away from under it).
+        local IN = 5
+        local AT = { top = { "BOTTOM", 0, IN }, bottom = { "TOP", 0, -IN }, left = { "RIGHT", -IN, 0 }, right = { "LEFT", IN, 0 } }
+        local p = AT[side] or AT.top
         f.grip:ClearAllPoints()
-        f.grip:SetPoint("CENTER", f, CORNER[side] or "BOTTOMLEFT", 0, 0)
+        f.grip:SetPoint("CENTER", f, p[1], p[2], p[3])
     end
     local off = f.off
     f:ClearAllPoints()
@@ -1177,8 +1182,9 @@ local function NewBoxFrame(ghost)
         -- The grip: the same gold stud as the pin, glowing under the mouse.
         local g = CreateFrame("Button", nil, f)
         g:SetSize(GRIP_SMALL, GRIP_SMALL)
-        if g.SetHitRectInsets then g:SetHitRectInsets(-6, -6, -6, -6) end -- (easier to catch than it looks)
-        g:SetFrameLevel(f:GetFrameLevel() + 5)
+        if g.SetHitRectInsets then g:SetHitRectInsets(-3, -3, -3, -3) end -- (easier to catch than it looks)
+        g:SetFrameStrata("MEDIUM") -- (over the kits in the box, where it meets the middle one's rim)
+        g:SetFrameLevel(40)
         g:RegisterForDrag("LeftButton")
         g.tex = g:CreateTexture(nil, "ARTWORK")
         g.tex:SetAllPoints()
