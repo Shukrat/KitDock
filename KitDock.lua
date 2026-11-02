@@ -1145,19 +1145,6 @@ local function TopTick(f, dt)
     f.n = math.max(1, BoxCount(f))
     BoxPoint(f)
     TopLook(f, (f.ghost or hovered or f.dragging) and true or false)
-    -- Tell the kits in it how far it's tucked (0 out, 1 tucked), so one can
-    -- keep something on screen as it goes (Warlock Kit's shard count).
-    if not f.ghost and f.box then
-        local t = (f.off - PARK_SHOW) / (PARK_TUCK - PARK_SHOW)
-        t = math.max(0, math.min(1, t))
-        for _, k in ipairs(BoxKeys(f.box)) do
-            local api = D.kits[k]
-            if api.BoxSlide and api.boxT ~= t then
-                api.boxT = t
-                api.BoxSlide(t)
-            end
-        end
-    end
 end
 
 local BoxDrop -- (below)
