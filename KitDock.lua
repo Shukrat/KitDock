@@ -1507,27 +1507,50 @@ local function RelayNotices(fr)
         fr.quiet = true
         return
     end
-    -- Each kit's block: NOTE_COLS along the edge, as many rows inward as it
-    -- needs, a small copy of the kit's icon at its head; a thin gold rule
-    -- between kits. The blocks together are centred on the box.
+    -- Each kit's block: a head column with a small copy of the kit's icon and,
+    -- under it, the kit's small buttons (buff timers, gear swap, pet spells);
+    -- beside it the regular slots, NOTE_COLS along the edge and as many rows
+    -- inward as they need. A thin gold rule between kits; the blocks together
+    -- are centred on the box.
     local ui = UIParent:GetEffectiveScale()
     local o = OUTWARD[side] or OUTWARD.top
     local inner = PARK_H / 2 + NOTE_GAP -- (from the box's middle to the first row)
-    local deepest = 0
-    local total = 0
+    local function Size(f) return f:GetWidth() * f:GetEffectiveScale() / ui end
+    -- Small: a slot the kit marks small, or a kit's own extra (a timer), not a slot.
+    local function Small(f) return f.isSmall or f.slot == nil end
+    local deepest, total = 0, 0
     for gi, g in ipairs(groups) do
+        g.smalls, g.bigs = {}, {}
+        for _, f in ipairs(g.items) do
+            if Small(f) then g.smalls[#g.smalls + 1] = f else g.bigs[#g.bigs + 1] = f end
+        end
+        local hw, hd = GLYPH, GLYPH
+        for _, f in ipairs(g.smalls) do
+            local w = Size(f)
+            hw = math.max(hw, w)
+            hd = hd + NOTE_GAP + w
+        end
         local w = 0
-        for _, f in ipairs(g.items) do w = math.max(w, f:GetWidth() * f:GetEffectiveScale() / ui) end
-        local cols = math.min(NOTE_COLS, #g.items)
-        local rows = math.ceil(#g.items / NOTE_COLS)
-        g.w, g.cols = w, cols
-        g.len = GLYPH + NOTE_GAP + cols * w + (cols - 1) * NOTE_GAP
-        deepest = math.max(deepest, rows * w + (rows - 1) * NOTE_GAP)
+        for _, f in ipairs(g.bigs) do w = math.max(w, Size(f)) end
+        local cols = math.min(NOTE_COLS, #g.bigs)
+        local rows = math.ceil(#g.bigs / NOTE_COLS)
+        g.hw, g.w = hw, w
+        g.len = hw + (cols > 0 and (NOTE_GAP + cols * w + (cols - 1) * NOTE_GAP) or 0)
+        deepest = math.max(deepest, hd, rows > 0 and (rows * w + (rows - 1) * NOTE_GAP) or 0)
         total = total + g.len + (gi > 1 and (SEP_PAD * 2 + 1) or 0)
     end
     local function Spot(along, depth) -- (UI units from the box's middle)
         if Vert(side) then return -o[1] * depth, -along end
         return along, -o[2] * depth
+    end
+    local function Put(f, along, depth)
+        if Frozen(f) then return end
+        local x, y = Spot(along, depth)
+        local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
+        StopTween(f)
+        f:ClearAllPoints()
+        f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
+        f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
     end
     local a = -total / 2
     for gi, g in ipairs(groups) do
@@ -1541,26 +1564,27 @@ local function RelayNotices(fr)
             t:Show()
             a = a + SEP_PAD * 2 + 1
         end
-        -- The kit's glyph, level with its first row.
+        -- The head: the kit's glyph, then its small buttons, one under another.
+        local mid = a + g.hw / 2
         local gl = Decor(fr, "glyphs", gi)
         local art = g.api.kit.icon and g.api.kit.icon.GetTexture and g.api.kit.icon:GetTexture()
         if art then gl:SetTexture(art) end
         gl:SetSize(GLYPH, GLYPH)
-        local gx, gy = Spot(a + GLYPH / 2, inner + g.w / 2)
+        local gx, gy = Spot(mid, inner + GLYPH / 2)
         gl:ClearAllPoints()
         gl:SetPoint("CENTER", fr, "CENTER", gx, gy)
         gl:SetShown(art ~= nil)
-        local start = a + GLYPH + NOTE_GAP
-        for j, f in ipairs(g.items) do
+        local d = inner + GLYPH + NOTE_GAP
+        for _, f in ipairs(g.smalls) do
+            local w = Size(f)
+            Put(f, mid, d + w / 2)
+            d = d + w + NOTE_GAP
+        end
+        -- The regular slots beside it.
+        local start = a + g.hw + NOTE_GAP
+        for j, f in ipairs(g.bigs) do
             local col, row = (j - 1) % NOTE_COLS, math.floor((j - 1) / NOTE_COLS)
-            local x, y = Spot(start + col * (g.w + NOTE_GAP) + g.w / 2, inner + row * (g.w + NOTE_GAP) + g.w / 2)
-            if not Frozen(f) then
-                local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
-                StopTween(f)
-                f:ClearAllPoints()
-                f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
-                f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
-            end
+            Put(f, start + col * (g.w + NOTE_GAP) + g.w / 2, inner + row * (g.w + NOTE_GAP) + g.w / 2)
         end
         a = a + g.len
     end
