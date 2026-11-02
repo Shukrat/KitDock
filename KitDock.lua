@@ -1462,11 +1462,21 @@ D.notices = D.notices or {}
 -- in one line just inside the box, in the kits' order. While a kit from the
 -- box is open, they all hide (fr.quiet), and come back when it closes.
 -- The box's separators and kit glyphs (pooled on its frame).
+-- (on a frame of their own over the box, so they fade together)
+local function DecorFrame(fr)
+    if not fr.decor then
+        fr.decor = CreateFrame("Frame", nil, fr)
+        fr.decor:SetAllPoints(fr)
+        fr.decor:SetFrameLevel(fr:GetFrameLevel() + 2)
+    end
+    return fr.decor
+end
+
 local function Decor(fr, kind, i)
     fr[kind] = fr[kind] or {}
     local t = fr[kind][i]
     if not t then
-        t = fr:CreateTexture(nil, "OVERLAY")
+        t = DecorFrame(fr):CreateTexture(nil, "OVERLAY")
         if kind == "seps" then t:SetColorTexture(0.66, 0.53, 0.24, 0.9) end
         fr[kind][i] = t
     end
@@ -1498,15 +1508,41 @@ local function RelayNotices(fr)
         end
     end
     local function Frozen(f) return InCombatLockdown() and f.IsProtected and f:IsProtected() end
-    if BoxOpen(b) then
-        for _, f in ipairs(all) do
+    -- Fade out (then hide), once, or at once in a fight.
+    local function FadeOut(f)
+        if f.boxFade == "out" then return end
+        if InCombatLockdown() or (UnitAffectingCombat and UnitAffectingCombat("player")) then
             if not Frozen(f) then f:Hide() end
+            return
         end
-        HideDecor(fr, "seps", 1)
-        HideDecor(fr, "glyphs", 1)
+        f.boxFade = "out"
+        D.Fade(f, true, function()
+            f.boxFade = nil
+            if not InCombatLockdown() then f:Hide() end
+        end)
+    end
+    if BoxOpen(b) then
+        -- A kit from the box is open: everything in the row fades away.
+        for _, f in ipairs(all) do FadeOut(f) end
+        if fr.decor and fr.decor:IsShown() then FadeOut(fr.decor) end
         fr.quiet = true
         return
     end
+    -- Just closed (fr.fadeStamp): what comes back fades in, once each.
+    local fresh = fr.fadeStamp and GetTime() - fr.fadeStamp < 0.25
+    local function FadeIn(f)
+        if f.boxFade == "out" then -- (still fading away: it stays)
+            f.boxFade = nil
+            D.Fade(f, false)
+        elseif fresh and f.boxFadeStamp ~= fr.fadeStamp then
+            D.Fade(f, false)
+        end
+        if fresh then f.boxFadeStamp = fr.fadeStamp end
+    end
+    local decor = DecorFrame(fr)
+    decor:Show()
+    FadeIn(decor)
+    for _, f in ipairs(all) do FadeIn(f) end
     -- Each kit's block: a head column with a small copy of the kit's icon and,
     -- under it, the kit's small buttons (buff timers, gear swap, pet spells);
     -- beside it the regular slots, NOTE_COLS along the edge and as many rows
@@ -1646,6 +1682,7 @@ local function LayoutBoxes(before)
             if f.quiet and not BoxOpen(b) then
                 -- A kit from the box just closed: the others' reminders come back.
                 f.quiet = nil
+                f.fadeStamp = GetTime()
                 for _, k in ipairs(keys) do
                     local api = D.kits[k]
                     if api.Refresh then api.Refresh() end
