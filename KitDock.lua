@@ -1386,78 +1386,58 @@ end
 -- Back out of a box. (Without Park, the layout's SetCompact(false) undoes
 -- the fanning.)
 local function ClearParked(api)
+    if api.quiet then
+        api.quiet = false
+        if api.Quiet then api.Quiet(false) end
+    end
     if not api.parked then return end
     api.parked = nil
     if api.Park then api.Park(false) end
 end
 
+-- While a kit from a box is open, the others in it keep their pinned slots
+-- and reminders out of the way (each kit hides them itself, sliding them
+-- back in, so a refresh doesn't bring them back for a moment).
+local function SetQuiet(api, on)
+    on = on and true or false
+    if (api.quiet or false) == on then return end
+    api.quiet = on
+    if api.Quiet then api.Quiet(on) end
+end
+
 -- One box's kits in a row along it, each gliding from where it was. A kit
--- that's open steps out of the row, just inside the box, full size, its
--- slots opening toward the middle of the screen; its place in the row
--- waits for it. The others' reminders and pinned slots show just inside the
--- box (each kit lays them out as on an edge).
+-- opened from the box stays in it, small, and opens where it is: its slots
+-- slide out of it toward the middle of the screen, so it closes again from
+-- the same spot.
 local function LayoutBoxKits(f, keys, before)
     local side = BoxNow(f)
     local n = #keys
+    local anyOpen = false
+    for _, k in ipairs(keys) do if D.kits[k].IsOpen() then anyOpen = true end end
     for i, k in ipairs(keys) do
         local api = D.kits[k]
         local kit = api.kit
         if k ~= D.skip then -- (not the one under the cursor)
             StopTween(kit)
-            local open = api.IsOpen()
-            local stepping = open and api.parked -- (just opened: it steps out of the box now)
-            if stepping then
-                -- Its reminders leave the box's row: hidden for a moment, so
-                -- they come back at their own spots by the kit (fading in, or
-                -- sliding out with its slots) instead of gliding across it.
-                local own = D.notices[k]
-                D.notices[k] = nil
-                for _, nf in ipairs(own or {}) do
-                    StopTween(nf)
-                    nf:Hide()
-                end
-            end
             if api.BeginMove then api.BeginMove() end
             local d = (i - (n + 1) / 2) * (PARK_SIZE + PARK_GAP)
             local ax, ay = d, 0
             if Vert(side) then ax, ay = 0, -d end -- top to bottom down the side
+            api.boxAt = { ax, ay } -- (UI units from the box's middle, for its row)
             SetClamp(api, false)
-            if open then
-                -- Full size first, so everything it lays out is for that size.
-                SetCompact(api, false)
-                ClearParked(api)
-                SetEdge(api, side)
-                -- Its own spot just inside the box (where the box is all the
-                -- way out), not hung on the box: the box slides, the kit stays.
-                f.off, f.out, f.linger, f.drawn = PARK_SHOW, true, 0, nil
-                BoxPoint(f)
-                local bx, by = Center(f)
-                local o = OUTWARD[side] or OUTWARD.top
-                local inward = PARK_H / 2 + 6 + KitHalf(api)
-                local x, y = (bx or 0) + ax - o[1] * inward, (by or 0) + ay - o[2] * inward
-                local s = kit:GetEffectiveScale() / UIParent:GetEffectiveScale()
-                kit:ClearAllPoints()
-                kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
-                api.Tuck(false)
-                if stepping then
-                    D.Fade(kit, false) -- grows in where it stands; its slots slide out from it
-                else
-                    local b = before[k]
-                    if b then KitGlide(kit, b[1], b[2], b[3]) end
-                end
-            else
-                SetParked(api, true, side)
-                SetEdge(api, side)
-                local ks = kit:GetScale()
-                kit:ClearAllPoints()
-                kit:SetPoint("CENTER", f, "CENTER", ax / ks, ay / ks)
-                api.Tuck(false)
-                local b = before[k]
-                if b then KitGlide(kit, b[1], b[2], b[3]) end
-            end
+            SetParked(api, true, side)
+            SetEdge(api, side)
+            local ks = kit:GetScale()
+            kit:ClearAllPoints()
+            kit:SetPoint("CENTER", f, "CENTER", ax / ks, ay / ks)
+            api.Tuck(false)
+            local b = before[k]
+            if b then KitGlide(kit, b[1], b[2], b[3]) end
             if api.EndMove then api.EndMove() end
+            SetQuiet(api, anyOpen and not api.IsOpen())
         end
     end
+    if anyOpen then f.off, f.out, f.linger = PARK_SHOW, true, 0 end -- (out while a kit is open from it)
 end
 
 -- What each boxed kit shows while closed (reminders, pinned slots), handed
@@ -1518,7 +1498,7 @@ local function RelayNotices(fr)
     local function FadeOut(f)
         if f.boxFade == "out" then return end
         if InCombatLockdown() or (UnitAffectingCombat and UnitAffectingCombat("player")) then
-            if not Frozen(f) then f:Hide() end
+            f:Hide()
             return
         end
         f.boxFade = "out"
@@ -1528,27 +1508,24 @@ local function RelayNotices(fr)
         end)
     end
     if BoxOpen(b) then
-        -- A kit from the box is open: everything in the row fades away.
-        for _, f in ipairs(all) do FadeOut(f) end
+        -- A kit from the box is open: its rules and kit icons fade away (the
+        -- kits put their own pinned slots and reminders away, see SetQuiet).
         if fr.decor and fr.decor:IsShown() then FadeOut(fr.decor) end
         fr.quiet = true
         return
     end
-    -- Just closed (fr.fadeStamp): what comes back fades in, once each.
-    local fresh = fr.fadeStamp and GetTime() - fr.fadeStamp < 0.25
-    local function FadeIn(f)
-        if f.boxFade == "out" then -- (still fading away: it stays)
-            f.boxFade = nil
-            D.Fade(f, false)
-        elseif fresh and f.boxFadeStamp ~= fr.fadeStamp then
-            D.Fade(f, false)
-        end
-        if fresh then f.boxFadeStamp = fr.fadeStamp end
-    end
     local decor = DecorFrame(fr)
+    if decor.boxFade == "out" then
+        decor.boxFade = nil
+        D.Fade(decor, false)
+    elseif fr.fadeStamp and decor.boxFadeStamp ~= fr.fadeStamp then
+        decor.boxFadeStamp = fr.fadeStamp
+        if not decor:IsShown() then
+            decor:Show()
+            D.Fade(decor, false)
+        end
+    end
     decor:Show()
-    FadeIn(decor)
-    for _, f in ipairs(all) do FadeIn(f) end
     -- Each kit's block: a head column with a small copy of the kit's icon and,
     -- under it, the kit's small buttons (buff timers, gear swap, pet spells);
     -- beside it the regular slots, NOTE_COLS along the edge and as many rows
@@ -1585,14 +1562,18 @@ local function RelayNotices(fr)
         if Vert(side) then return -o[1] * depth, -along end
         return along, -o[2] * depth
     end
-    local function Put(f, along, depth)
+    -- Hung on its own kit (so it slides back into it, and goes along with it),
+    -- at its spot in the row.
+    local function Put(g, f, along, depth)
         if Frozen(f) then return end
         local x, y = Spot(along, depth)
-        local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
+        local at = g.api.boxAt or { 0, 0 }
+        local sc = f:GetEffectiveScale() / ui
+        local px, py = (x - at[1]) / sc, (y - at[2]) / sc
         StopTween(f)
         f:ClearAllPoints()
-        f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
-        f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
+        f:SetPoint("CENTER", g.api.kit, "CENTER", px, py)
+        f.placedX, f.placedY = px, py
     end
     local a = -total / 2
     for gi, g in ipairs(groups) do
@@ -1619,14 +1600,14 @@ local function RelayNotices(fr)
         local d = inner + GLYPH + NOTE_GAP
         for _, f in ipairs(g.smalls) do
             local w = Size(f)
-            Put(f, mid, d + w / 2)
+            Put(g, f, mid, d + w / 2)
             d = d + w + NOTE_GAP
         end
         -- The regular slots beside it.
         local start = a + g.hw + NOTE_GAP
         for j, f in ipairs(g.bigs) do
             local col, row = (j - 1) % NOTE_COLS, math.floor((j - 1) / NOTE_COLS)
-            Put(f, start + col * (g.w + NOTE_GAP) + g.w / 2, inner + row * (g.w + NOTE_GAP) + g.w / 2)
+            Put(g, f, start + col * (g.w + NOTE_GAP) + g.w / 2, inner + row * (g.w + NOTE_GAP) + g.w / 2)
         end
         a = a + g.len
     end
@@ -1686,13 +1667,9 @@ local function LayoutBoxes(before)
             f:Show()
             LayoutBoxKits(f, keys, before)
             if f.quiet and not BoxOpen(b) then
-                -- A kit from the box just closed: the others' reminders come back.
+                -- A kit from the box just closed: the row's rules and icons fade back in.
                 f.quiet = nil
                 f.fadeStamp = GetTime()
-                for _, k in ipairs(keys) do
-                    local api = D.kits[k]
-                    if api.Refresh then api.Refresh() end
-                end
             end
             RelayNotices(f)
         end
