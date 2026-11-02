@@ -1438,6 +1438,33 @@ local function LayoutBoxKits(f, keys, before)
         end
     end
     if anyOpen then f.off, f.out, f.linger = PARK_SHOW, true, 0 end -- (out while a kit is open from it)
+    -- The open kit sits on a soft gold disc in the box (a highlight, not a glow).
+    local hl = f.openHL
+    if anyOpen and not hl then
+        hl = f:CreateTexture(nil, "ARTWORK")
+        hl:SetColorTexture(1, 0.82, 0.35, 0.3)
+        if f.CreateMaskTexture and hl.AddMaskTexture then
+            local m = f:CreateMaskTexture()
+            m:SetTexture(D.media .. "circle_mask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            m:SetAllPoints(hl)
+            hl:AddMaskTexture(m)
+        end
+        f.openHL = hl
+    end
+    if hl then
+        local at
+        for _, k in ipairs(keys) do
+            if D.kits[k].IsOpen() then at = D.kits[k].boxAt end
+        end
+        if at then
+            hl:SetSize(PARK_SIZE + 10, PARK_SIZE + 10)
+            hl:ClearAllPoints()
+            hl:SetPoint("CENTER", f, "CENTER", at[1], at[2])
+            hl:Show()
+        else
+            hl:Hide()
+        end
+    end
 end
 
 -- What each boxed kit shows while closed (reminders, pinned slots), handed
