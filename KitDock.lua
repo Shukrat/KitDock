@@ -47,7 +47,7 @@ local addonName, ns = ...
 -- stays there.
 ---------------------------------------------------------------------------
 
-local VERSION = 23
+local VERSION = 24
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -987,14 +987,19 @@ local function BoxPoint(f)
     local long = BoxLong(n)
     if Vert(side) then f:SetSize(PARK_H, long) else f:SetSize(long, PARK_H) end
     if f.grip then
-        -- In the middle of the box's inner edge, just inside its border, so
-        -- the mouse is still over the box while it's on the grip (on the
-        -- corner, the box could slide away from under it).
-        local IN = 5
-        local AT = { top = { "BOTTOM", 0, IN }, bottom = { "TOP", 0, -IN }, left = { "RIGHT", -IN, 0 }, right = { "LEFT", IN, 0 } }
-        local p = AT[side] or AT.top
+        -- On the box's inner edge at its start end (the left, or the top on
+        -- the sides), just inside the border: clear of the kits (the first
+        -- kit's round rim leaves the corner free), and the mouse is still
+        -- over the box while it's on the grip, so the box doesn't slide away.
+        local IN, END = 5, 7
+        local x, y
+        if Vert(side) then
+            x, y = (side == "left" and 1 or -1) * (PARK_H / 2 - IN), long / 2 - END
+        else
+            x, y = -(long / 2 - END), (side == "top" and -1 or 1) * (PARK_H / 2 - IN)
+        end
         f.grip:ClearAllPoints()
-        f.grip:SetPoint("CENTER", f, p[1], p[2], p[3])
+        f.grip:SetPoint("CENTER", f, "CENTER", x, y)
     end
     local off = f.off
     f:ClearAllPoints()
