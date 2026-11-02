@@ -75,7 +75,9 @@ local PARK_TUCK = 26     -- tucked: the box's outer edge sits this far past the 
 local PARK_SHOW = 8      -- out: still this far past the screen's edge (no gap to fall into), its kits all in view
 local GRIP_SMALL, GRIP_BIG = 8, 18 -- the grip: a small dot on the box's corner, bigger under the mouse
 local NOTE_GAP = 4       -- between the reminders in a box's row
-local NOTE_ROW = 6       -- at most this many in a row; more start another row further in
+local NOTE_COLS = 3      -- each kit's block in a box's row: this many along the edge, then another row inward
+local GLYPH = 14         -- the small kit icon at the head of each block
+local SEP_PAD = 7        -- either side of the rule between two kits' blocks
 local PARK_SLIDE = 0.18  -- seconds to slide
 local PARK_LINGER = 0.35 -- seconds the mouse has to be away before it tucks again
 
@@ -1459,49 +1461,99 @@ D.notices = D.notices or {}
 -- A box's row of reminders: everything its closed kits show, side by side
 -- in one line just inside the box, in the kits' order. While a kit from the
 -- box is open, they all hide (fr.quiet), and come back when it closes.
+-- The box's separators and kit glyphs (pooled on its frame).
+local function Decor(fr, kind, i)
+    fr[kind] = fr[kind] or {}
+    local t = fr[kind][i]
+    if not t then
+        t = fr:CreateTexture(nil, "OVERLAY")
+        if kind == "seps" then t:SetColorTexture(0.66, 0.53, 0.24, 0.9) end
+        fr[kind][i] = t
+    end
+    return t
+end
+
+local function HideDecor(fr, kind, from)
+    for i = from, #(fr[kind] or {}) do fr[kind][i]:Hide() end
+end
+
 local function RelayNotices(fr)
     local b = fr.box
     if not b then return end
     local side = BoxNow(fr)
-    local items = {}
+    -- One group per kit with something to show, in the box's order.
+    local groups, all = {}, {}
     for _, k in ipairs(BoxKeys(b)) do
         local api = D.kits[k]
         local list = D.notices[k]
         if list and api.parked and not api.IsOpen() then
+            local items = {}
             for _, f in ipairs(list) do
-                if f:IsShown() and not InList(items, f) then items[#items + 1] = f end
+                if f:IsShown() and not InList(all, f) then
+                    items[#items + 1] = f
+                    all[#all + 1] = f
+                end
             end
+            if #items > 0 then groups[#groups + 1] = { key = k, api = api, items = items } end
         end
     end
     local function Frozen(f) return InCombatLockdown() and f.IsProtected and f:IsProtected() end
     if BoxOpen(b) then
-        for _, f in ipairs(items) do
+        for _, f in ipairs(all) do
             if not Frozen(f) then f:Hide() end
         end
+        HideDecor(fr, "seps", 1)
+        HideDecor(fr, "glyphs", 1)
         fr.quiet = true
         return
     end
+    -- Each kit's block: NOTE_COLS along the edge, as many rows inward as it
+    -- needs, a small copy of the kit's icon at its head; a thin gold rule
+    -- between kits. The blocks together are centred on the box.
     local ui = UIParent:GetEffectiveScale()
     local o = OUTWARD[side] or OUTWARD.top
-    local inner = PARK_H / 2 + NOTE_GAP -- (from the box's middle to where the first row starts)
-    -- In rows of up to NOTE_ROW, each centred on the box, row after row inward.
-    for first = 1, #items, NOTE_ROW do
-        local last = math.min(#items, first + NOTE_ROW - 1)
-        local sizes, total, deep = {}, 0, 0
-        for i = first, last do
-            local f = items[i]
-            local w = f:GetWidth() * f:GetEffectiveScale() / ui
-            sizes[i] = w
-            total = total + w + (i > first and NOTE_GAP or 0)
-            deep = math.max(deep, w)
+    local inner = PARK_H / 2 + NOTE_GAP -- (from the box's middle to the first row)
+    local deepest = 0
+    local total = 0
+    for gi, g in ipairs(groups) do
+        local w = 0
+        for _, f in ipairs(g.items) do w = math.max(w, f:GetWidth() * f:GetEffectiveScale() / ui) end
+        local cols = math.min(NOTE_COLS, #g.items)
+        local rows = math.ceil(#g.items / NOTE_COLS)
+        g.w, g.cols = w, cols
+        g.len = GLYPH + NOTE_GAP + cols * w + (cols - 1) * NOTE_GAP
+        deepest = math.max(deepest, rows * w + (rows - 1) * NOTE_GAP)
+        total = total + g.len + (gi > 1 and (SEP_PAD * 2 + 1) or 0)
+    end
+    local function Spot(along, depth) -- (UI units from the box's middle)
+        if Vert(side) then return -o[1] * depth, -along end
+        return along, -o[2] * depth
+    end
+    local a = -total / 2
+    for gi, g in ipairs(groups) do
+        if gi > 1 then
+            -- The rule between this kit and the one before.
+            local t = Decor(fr, "seps", gi - 1)
+            local x, y = Spot(a + SEP_PAD + 0.5, inner + deepest / 2)
+            t:ClearAllPoints()
+            t:SetPoint("CENTER", fr, "CENTER", x, y)
+            if Vert(side) then t:SetSize(deepest, 1) else t:SetSize(1, deepest) end
+            t:Show()
+            a = a + SEP_PAD * 2 + 1
         end
-        local a = -total / 2
-        for i = first, last do
-            local f, w = items[i], sizes[i]
-            local along = a + w / 2
-            local depth = inner + deep / 2 -- (inward from the box's middle)
-            local x, y
-            if Vert(side) then x, y = -o[1] * depth, -along else x, y = along, -o[2] * depth end
+        -- The kit's glyph, level with its first row.
+        local gl = Decor(fr, "glyphs", gi)
+        local art = g.api.kit.icon and g.api.kit.icon.GetTexture and g.api.kit.icon:GetTexture()
+        if art then gl:SetTexture(art) end
+        gl:SetSize(GLYPH, GLYPH)
+        local gx, gy = Spot(a + GLYPH / 2, inner + g.w / 2)
+        gl:ClearAllPoints()
+        gl:SetPoint("CENTER", fr, "CENTER", gx, gy)
+        gl:SetShown(art ~= nil)
+        local start = a + GLYPH + NOTE_GAP
+        for j, f in ipairs(g.items) do
+            local col, row = (j - 1) % NOTE_COLS, math.floor((j - 1) / NOTE_COLS)
+            local x, y = Spot(start + col * (g.w + NOTE_GAP) + g.w / 2, inner + row * (g.w + NOTE_GAP) + g.w / 2)
             if not Frozen(f) then
                 local sc = f:GetEffectiveScale() / fr:GetEffectiveScale()
                 StopTween(f)
@@ -1509,10 +1561,11 @@ local function RelayNotices(fr)
                 f:SetPoint("CENTER", fr, "CENTER", x / sc, y / sc)
                 f.placedX, f.placedY = nil, nil -- (so the kit places it again once it leaves the box)
             end
-            a = a + w + NOTE_GAP
         end
-        inner = inner + deep + NOTE_GAP
+        a = a + g.len
     end
+    HideDecor(fr, "seps", math.max(1, #groups))
+    HideDecor(fr, "glyphs", #groups + 1)
 end
 
 -- For the kits: what a boxed kit shows now, in order.
