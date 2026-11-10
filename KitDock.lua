@@ -47,7 +47,7 @@ local addonName, ns = ...
 -- stays there.
 ---------------------------------------------------------------------------
 
-local VERSION = 25
+local VERSION = 26
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -3038,12 +3038,37 @@ function D.SharedMinimap() return Installed() >= 2 end
 
 local mmButton, menu
 
-local function PlaceMinimap()
-    if not mmButton then return end
-    local angle = math.rad(DB().minimapAngle or 225)
-    local r = (Minimap:GetWidth() / 2) + 6
-    mmButton:ClearAllPoints()
-    mmButton:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * r, math.sin(angle) * r)
+-- From v26 the shared button is a LibDataBroker launcher ("KitDock") shown
+-- by LibDBIcon, so square minimaps and button-bag addons handle it. The
+-- libraries come with Kit Core (Libs\KitCore\Libs\Libs.xml in each kit's
+-- .toc). Its spot is DB().minimapIcon; before v26 it was DB().minimapAngle.
+local function MinimapLibs()
+    if not LibStub then return end
+    return LibStub("LibDataBroker-1.1", true), LibStub("LibDBIcon-1.0", true)
+end
+
+-- The chest has its own gold rim: no LibDBIcon border or backing, drawn 27
+-- across inside the 31 button with the gold hover glow, no press zoom.
+local function StyleChest(b, tex)
+    local _, dbi = MinimapLibs()
+    if dbi.RemoveButtonBorder then dbi:RemoveButtonBorder("KitDock") elseif b.border then b.border:Hide() end
+    if dbi.RemoveButtonBackground then dbi:RemoveButtonBackground("KitDock") elseif b.background then b.background:Hide() end
+    local icon = b.icon
+    icon:ClearAllPoints()
+    icon:SetPoint("TOPLEFT", 2, -2)
+    icon:SetPoint("BOTTOMRIGHT", -2, 2)
+    icon.UpdateCoord = function(t) t:SetTexCoord(0, 1, 0, 1) end
+    icon:UpdateCoord()
+    icon:SetTexture(tex, nil, nil, "LINEAR")
+    b:SetHighlightTexture(D.media .. "glow_ring")
+    local hl = b:GetHighlightTexture()
+    if hl then
+        hl:SetBlendMode("ADD")
+        hl:SetAlpha(0.5)
+        hl:ClearAllPoints()
+        hl:SetPoint("TOPLEFT", 2, -2)
+        hl:SetPoint("BOTTOMRIGHT", -2, 2)
+    end
 end
 
 local function BuildMenu()
@@ -3134,12 +3159,12 @@ local function FillMenu()
     f:SetSize(240, -y + 10)
 end
 
-local function ToggleMenu()
+local function ToggleMenu(anchor)
     local f = BuildMenu()
     if f:IsShown() then f:Hide() return end
     FillMenu()
     f:ClearAllPoints()
-    f:SetPoint("TOPRIGHT", mmButton, "BOTTOMLEFT", 0, 0)
+    f:SetPoint("TOPRIGHT", anchor or mmButton, "BOTTOMLEFT", 0, 0) -- (the frame clicked: may be in a button bag)
     f:Show()
 end
 
@@ -3148,49 +3173,28 @@ function D.SetupMinimap()
     for _, api in pairs(D.kits) do
         if api.ApplyMinimap then api.ApplyMinimap() end -- own buttons step aside (or come back)
     end
-    if not shared or not Minimap then
-        if mmButton then mmButton:Hide() end
-        return
+    local ldb, dbi = MinimapLibs()
+    if not (ldb and dbi and Minimap) then return end -- libraries missing: no shared button
+    local db = DB()
+    if type(db.minimapIcon) ~= "table" then
+        db.minimapIcon = { minimapPos = (db.minimapAngle or 225) % 360 } -- the spot from before v26
     end
+    local show = shared and db.minimap ~= false
+    db.minimapIcon.hide = not show -- (button bags read this too)
     if not mmButton then
-        local b = CreateFrame("Button", "KitDockMinimapButton", Minimap)
-        b:SetSize(31, 31)
-        b:SetFrameStrata("MEDIUM")
-        b:SetFrameLevel(Minimap:GetFrameLevel() + 8)
-        b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-        b:RegisterForDrag("LeftButton")
-        -- The Kits chest (it has its own gold rim), drawn 27 across inside the
-        -- 31 button so it sits the same size as other addons' minimap buttons.
-        local icon = b:CreateTexture(nil, "ARTWORK")
-        icon:SetPoint("TOPLEFT", 2, -2)
-        icon:SetPoint("BOTTOMRIGHT", -2, 2)
-        b.icon = icon
-        local hl = b:CreateTexture(nil, "HIGHLIGHT")
-        hl:SetTexture(D.media .. "glow_ring")
-        hl:SetBlendMode("ADD")
-        hl:SetAllPoints(icon)
-        hl:SetAlpha(0.5)
-        b:SetScript("OnClick", function() ToggleMenu() end)
-        b:SetScript("OnDragStart", function(self)
-            self:SetScript("OnUpdate", function()
-                local mx, my = Minimap:GetCenter()
-                local px, py = GetCursorPosition()
-                local sc = Minimap:GetEffectiveScale()
-                DB().minimapAngle = math.deg(math.atan2(py / sc - my, px / sc - mx)) % 360
-                PlaceMinimap()
-            end)
-            GameTooltip:Hide()
-        end)
-        b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
-        b:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-            GameTooltip:AddLine("Kits")
-            GameTooltip:AddLine("Click: show or hide each kit, and open its settings", 1, 1, 1)
-            GameTooltip:AddLine("Drag: move around the minimap", 1, 1, 1)
-            GameTooltip:Show()
-        end)
-        b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        mmButton = b
+        if not show then return end -- made the first time it's needed
+        local obj = ldb:GetDataObjectByName("KitDock") or ldb:NewDataObject("KitDock", {
+            type = "launcher", label = "Kits", icon = OWN_MEDIA .. "kits_chest_64",
+        })
+        obj.OnClick = function(frame) ToggleMenu(frame) end
+        obj.OnTooltipShow = function(tt)
+            tt:AddLine("Kits")
+            tt:AddLine("Click: show or hide each kit, and open its settings", 1, 1, 1)
+            tt:AddLine("Drag: move around the minimap", 1, 1, 1)
+        end
+        if not dbi:IsRegistered("KitDock") then dbi:Register("KitDock", obj, db.minimapIcon) end
+        mmButton = dbi:GetMinimapButton("KitDock")
+        if not mmButton then return end
     end
     -- The chest at the size it shows on screen (addon art isn't mipmapped).
     local px = 27
@@ -3198,9 +3202,8 @@ function D.SetupMinimap()
     if h and h > 0 then px = 27 * mmButton:GetEffectiveScale() * h / 768 end
     local size = 128
     for _, sz in ipairs({ 32, 48, 64, 96, 128 }) do if px <= sz then size = sz break end end
-    mmButton.icon:SetTexture(OWN_MEDIA .. "kits_chest_" .. size, nil, nil, "LINEAR")
-    mmButton:SetShown(DB().minimap ~= false)
-    PlaceMinimap()
+    StyleChest(mmButton, OWN_MEDIA .. "kits_chest_" .. size)
+    if show then dbi:Show("KitDock") else dbi:Hide("KitDock") end
     if menu and menu:IsShown() then FillMenu() end
 end
 
