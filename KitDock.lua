@@ -47,7 +47,7 @@ local addonName, ns = ...
 -- stays there.
 ---------------------------------------------------------------------------
 
-local VERSION = 24
+local VERSION = 25
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -1469,6 +1469,54 @@ local function LayoutBoxKits(f, keys, before)
     end
 end
 
+-- Quick Keybind Mode (from v25, with Kit Core v15): every kit opens fully so
+-- each button can be bound, and a box's kits come out of it to do that: full
+-- size, side by side along its edge, centred on the box, fully on screen,
+-- each with room for its open columns. The box itself steps aside. Nothing
+-- saved changes, so when the mode closes the usual layout puts them back in
+-- the box as they were.
+local function LayoutBoxKitsOut(f, keys, before)
+    local side = BoxNow(f)
+    local GAP = 10
+    local ext, total = {}, 0
+    for _, k in ipairs(keys) do
+        local api = D.kits[k]
+        if api.parked then ClearParked(api) end
+        if api.quiet then SetQuiet(api, false) end
+        SetCompact(api, false)
+        SetEdge(api, side)
+        ext[k] = EdgeExt(k, side, true)
+        total = total + ext[k]
+    end
+    total = total + GAP * math.max(0, #keys - 1)
+    local L, M = AlongLen(side), 8
+    local a = BoxAlong(side, select(2, BoxNow(f)), math.max(1, #keys)) - total / 2
+    a = math.max(M, math.min(a, L - M - total))
+    for _, k in ipairs(keys) do
+        local api = D.kits[k]
+        local kit = api.kit
+        StopTween(kit)
+        if api.BeginMove then api.BeginMove() end
+        SetClamp(api, false)
+        api.Tuck(false)
+        local x, y = EdgePos(side, KitHalf(api), a + ext[k] / 2)
+        local s = kit:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        kit:ClearAllPoints()
+        kit:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x / s, y / s)
+        local b = before[k]
+        if b then KitGlide(kit, b[1], b[2], b[3]) end
+        if api.EndMove then api.EndMove() end
+        a = a + ext[k] + GAP
+    end
+end
+
+function D.SetQuickKeybind(on)
+    on = on and true or nil
+    if D.qkb == on then return end
+    D.qkb = on
+    D.Layout()
+end
+
 -- What each boxed kit shows while closed (reminders, pinned slots), handed
 -- over by the kit (Kit Core's PlaceSlots): D.notices[key] = { frame, ... }.
 D.notices = D.notices or {}
@@ -1689,6 +1737,9 @@ local function LayoutBoxes(before)
         local hovered = b and D.hover and D.hover.box == b
         if not b or (#keys == 0 and not hovered and not f.dragging) then
             f:Hide()
+        elseif D.qkb then
+            f:Hide()
+            LayoutBoxKitsOut(f, keys, before)
         else
             f.n = math.max(1, BoxCount(f))
             f.drawn = nil
@@ -1714,9 +1765,10 @@ local function DoLayout()
     local keys = DockedKeys()
     local pin = Pin()
 
-    -- A kit that has left its box gets its slots back.
+    -- A kit that has left its box (or is out of it for Quick Keybind Mode)
+    -- gets its slots back.
     for key, api in pairs(D.kits) do
-        if api.parked and not (IsParked(key) and Parkable(key)) then ClearParked(api) end
+        if api.parked and (D.qkb or not (IsParked(key) and Parkable(key))) then ClearParked(api) end
     end
 
     -- A kit opened in place (see D.OpenInPlace): the kits that hide in
