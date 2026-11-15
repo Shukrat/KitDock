@@ -753,7 +753,9 @@ local function NoTuck(api)
     return api.NoTuck and api.NoTuck() and true or false
 end
 -- The mouse over one of the kit's pieces beside it (a reminder, a pinned
--- slot) counts as over the kit: hovering a tucked reminder slides it all out.
+-- slot) doesn't slide a tucked kit out, even inside the kit's hover margin.
+-- A kit that's already out stays out there (so it doesn't tuck away from
+-- under the mouse on the way to a reminder).
 local function OverParts(api)
     return api.OverParts and api.OverParts() and true or false
 end
@@ -801,8 +803,8 @@ local function EdgeTick(_, dt)
         if api and st and st.c and st.side == g.side and Shown(k) and k ~= D.skip
             and not (D.dragging and D.dragging.key == k) and api.kit:IsShown() then
             local kit = api.kit
-            local want = NoTuck(api) or api.IsOpen() or (kit.IsMouseOver and kit:IsMouseOver(14, -14, -14, 14))
-                or OverParts(api)
+            local want = NoTuck(api) or api.IsOpen()
+                or (kit.IsMouseOver and kit:IsMouseOver(14, -14, -14, 14) and (st.out or not OverParts(api)))
                 or (st.hold and now < st.hold)
             if want then
                 st.linger = 0
@@ -1030,7 +1032,8 @@ local function BoxOpen(b)
     return false
 end
 
--- The mouse over a boxed kit's reminder or pinned slot beside the box.
+-- The mouse over a boxed kit's reminder or pinned slot beside the box (it
+-- doesn't slide the box out).
 local function BoxPartsOver(b)
     for _, k in ipairs(BoxKeys(b)) do
         local api = D.kits[k]
@@ -1150,8 +1153,8 @@ local function TopTick(f, dt)
         f:SetAlpha(gone and 0 or 1)
     end
     local hovered = D.hover and D.hover.box == f.box
-    local want = f.ghost or Over(f) or (f.grip and Over(f.grip)) or hovered or f.dragging or BoxOpen(f.box)
-        or BoxPartsOver(f.box)
+    local want = f.ghost or (Over(f) and (f.out or not BoxPartsOver(f.box))) or (f.grip and Over(f.grip)) or hovered
+        or f.dragging or BoxOpen(f.box)
     if not want and f.hold and GetTime() < f.hold then want = true end
     if want then
         f.linger = 0
