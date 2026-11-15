@@ -752,6 +752,11 @@ local OUTWARD = { left = { -1, 0 }, right = { 1, 0 }, top = { 0, 1 }, bottom = {
 local function NoTuck(api)
     return api.NoTuck and api.NoTuck() and true or false
 end
+-- The mouse over one of the kit's pieces beside it (a reminder, a pinned
+-- slot) counts as over the kit: hovering a tucked reminder slides it all out.
+local function OverParts(api)
+    return api.OverParts and api.OverParts() and true or false
+end
 D.NoTuck = function(key) local api = D.kits[key]; return api and NoTuck(api) or false end
 
 -- How far a kit slides to tuck: its centre ends up on the screen's edge.
@@ -797,6 +802,7 @@ local function EdgeTick(_, dt)
             and not (D.dragging and D.dragging.key == k) and api.kit:IsShown() then
             local kit = api.kit
             local want = NoTuck(api) or api.IsOpen() or (kit.IsMouseOver and kit:IsMouseOver(14, -14, -14, 14))
+                or OverParts(api)
                 or (st.hold and now < st.hold)
             if want then
                 st.linger = 0
@@ -1024,6 +1030,15 @@ local function BoxOpen(b)
     return false
 end
 
+-- The mouse over a boxed kit's reminder or pinned slot beside the box.
+local function BoxPartsOver(b)
+    for _, k in ipairs(BoxKeys(b)) do
+        local api = D.kits[k]
+        if api and OverParts(api) then return true end
+    end
+    return false
+end
+
 -- The box under a point (UI units), with room to spare, for dropping onto.
 -- except: a box to leave out (the one being dragged). extra: kits it would
 -- gain (it grows toward them).
@@ -1136,6 +1151,7 @@ local function TopTick(f, dt)
     end
     local hovered = D.hover and D.hover.box == f.box
     local want = f.ghost or Over(f) or (f.grip and Over(f.grip)) or hovered or f.dragging or BoxOpen(f.box)
+        or BoxPartsOver(f.box)
     if not want and f.hold and GetTime() < f.hold then want = true end
     if want then
         f.linger = 0
