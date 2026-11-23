@@ -47,7 +47,7 @@ local addonName, ns = ...
 -- stays there.
 ---------------------------------------------------------------------------
 
-local VERSION = 27
+local VERSION = 28
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -57,6 +57,32 @@ D = D or {}
 _G.KitDock = D
 ns.Dock = D
 D.version = VERSION
+
+-- The words on screen (KitDock.L), keyed by their English: Loc["Settings"]. A
+-- key with no translation comes back as itself, so English needs no entries
+-- and a string nobody has translated shows in English. The table is this
+-- copy's own, rebuilt whenever a newer copy takes over, so the text always
+-- matches the code that's running. It's Loc here, not L: this file already
+-- uses L for left edges and lengths. Kits keep their own text in their own
+-- tables (ns.L); this one is only for what Kit Dock itself shows.
+local Loc = setmetatable({}, { __index = function(_, key) return key end })
+D.L = Loc
+do
+    local locale = GetLocale and GetLocale() or "enUS"
+    if locale == "zhCN" then
+        -- Simplified Chinese: Loc["English, exactly as in the code"] = "中文"
+        Loc["Move kits"] = "移动套件"
+        Loc["Drag to move your kits together. Drag to a screen edge to tuck them all into the kit box there. Drag a kit away from the pin to float it on its own; drop it near the pin to dock it again."] = "拖动可一起移动你的套件。拖到屏幕边缘可把它们全部收进那里的套件框。把某个套件拖离停靠点可让它单独浮动；放到停靠点附近可重新停靠。"
+        Loc["Move the kit box"] = "移动套件框"
+        Loc["Drag along any edge of the screen. Drop it on another box to merge them; drag it away from the edge to put its kits back on the pin."] = "沿屏幕任意边缘拖动。放到另一个框上可合并；拖离边缘可把其中的套件放回停靠点。"
+        Loc["Kits"] = "套件"
+        Loc["Settings"] = "设置"
+        Loc["Click: show or hide each kit, and open its settings"] = "点击：显示或隐藏各个套件，并打开其设置"
+        Loc["Drag: move around the minimap"] = "拖动：沿小地图移动"
+        Loc["can't park %s (in combat, or it's an edges-only kit)"] = "无法停放 %s（战斗中，或它是只能停在边缘的套件）"
+        Loc["/kitdock park <kit> or /kitdock unpark <kit>. Kits here: %s"] = "/kitdock park <套件> 或 /kitdock unpark <套件>。这里的套件：%s"
+    end
+end
 D.kits = D.kits or {}
 D.media = D.media or ("Interface\\AddOns\\" .. addonName .. "\\media\\")
 -- Art new in this version (the Kits chest) comes from the kit that carries
@@ -315,8 +341,8 @@ local function Pin()
     p:SetScript("OnEnter", function(self)
         if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Move kits")
-        GameTooltip:AddLine("Drag to move your kits together. Drag to a screen edge to tuck them all into the kit box there. Drag a kit away from the pin to float it on its own; drop it near the pin to dock it again.", 1, 1, 1, true)
+        GameTooltip:AddLine(Loc["Move kits"])
+        GameTooltip:AddLine(Loc["Drag to move your kits together. Drag to a screen edge to tuck them all into the kit box there. Drag a kit away from the pin to float it on its own; drop it near the pin to dock it again."], 1, 1, 1, true)
         GameTooltip:Show()
     end)
     p:SetScript("OnLeave", function()
@@ -1231,8 +1257,8 @@ local function NewBoxFrame(ghost)
             self:SetSize(GRIP_BIG, GRIP_BIG)
             if SetCursor then pcall(SetCursor, "UI_MOVE_CURSOR") end
             GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
-            GameTooltip:AddLine("Move the kit box")
-            GameTooltip:AddLine("Drag along any edge of the screen. Drop it on another box to merge them; drag it away from the edge to put its kits back on the pin.", 1, 1, 1, true)
+            GameTooltip:AddLine(Loc["Move the kit box"])
+            GameTooltip:AddLine(Loc["Drag along any edge of the screen. Drop it on another box to merge them; drag it away from the edge to put its kits back on the pin."], 1, 1, 1, true)
             GameTooltip:Show()
         end)
         g:SetScript("OnLeave", function(self)
@@ -3020,14 +3046,14 @@ SlashCmdList["KITDOCK"] = function(msg)
     cmd = (cmd or ""):lower()
     local function say(text) DEFAULT_CHAT_FRAME:AddMessage("|cffffd100Kit Dock:|r " .. text) end
     if cmd == "park" and D.kits[key] then
-        if not D.Park(key) then say("can't park " .. key .. " (in combat, or it's an edges-only kit)") end
+        if not D.Park(key) then say((Loc["can't park %s (in combat, or it's an edges-only kit)"]):format(key)) end
     elseif cmd == "unpark" and D.kits[key] then
         D.Unpark(key)
     else
         local keys = {}
         for k in pairs(D.kits) do keys[#keys + 1] = k end
         table.sort(keys)
-        say("/kitdock park <kit> or /kitdock unpark <kit>. Kits here: " .. table.concat(keys, ", "))
+        say((Loc["/kitdock park <kit> or /kitdock unpark <kit>. Kits here: %s"]):format(table.concat(keys, ", ")))
     end
 end
 
@@ -3119,7 +3145,7 @@ local function BuildMenu()
     end
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     f.title:SetPoint("TOPLEFT", 12, -10)
-    f.title:SetText("Kits")
+    f.title:SetText(Loc["Kits"])
     f.rows = {}
     f:Hide()
     tinsert(UISpecialFrames, "KitDockMenu") -- Escape closes it
@@ -3158,7 +3184,7 @@ local function FillMenu()
                 local okb, gear = pcall(CreateFrame, "Button", nil, f, "UIPanelButtonTemplate")
                 if not okb or not gear then gear = CreateFrame("Button", nil, f) end
                 gear:SetSize(70, 20)
-                gear:SetText("Settings")
+                gear:SetText(Loc["Settings"])
                 row.gear = gear
                 f.rows[i] = row
             end
@@ -3213,13 +3239,13 @@ function D.SetupMinimap()
     if not mmButton then
         if not show then return end -- made the first time it's needed
         local obj = ldb:GetDataObjectByName("KitDock") or ldb:NewDataObject("KitDock", {
-            type = "launcher", label = "Kits", icon = OWN_MEDIA .. "kits_chest_64",
+            type = "launcher", label = Loc["Kits"], icon = OWN_MEDIA .. "kits_chest_64",
         })
         obj.OnClick = function(frame) ToggleMenu(frame) end
         obj.OnTooltipShow = function(tt)
-            tt:AddLine("Kits")
-            tt:AddLine("Click: show or hide each kit, and open its settings", 1, 1, 1)
-            tt:AddLine("Drag: move around the minimap", 1, 1, 1)
+            tt:AddLine(Loc["Kits"])
+            tt:AddLine(Loc["Click: show or hide each kit, and open its settings"], 1, 1, 1)
+            tt:AddLine(Loc["Drag: move around the minimap"], 1, 1, 1)
         end
         if not dbi:IsRegistered("KitDock") then dbi:Register("KitDock", obj, db.minimapIcon) end
         mmButton = dbi:GetMinimapButton("KitDock")
