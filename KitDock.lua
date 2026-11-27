@@ -47,7 +47,7 @@ local addonName, ns = ...
 -- stays there.
 ---------------------------------------------------------------------------
 
-local VERSION = 28
+local VERSION = 30
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -81,6 +81,19 @@ do
         Loc["Drag: move around the minimap"] = "拖动：沿小地图移动"
         Loc["can't park %s (in combat, or it's an edges-only kit)"] = "无法停放 %s（战斗中，或它是只能停在边缘的套件）"
         Loc["/kitdock park <kit> or /kitdock unpark <kit>. Kits here: %s"] = "/kitdock park <套件> 或 /kitdock unpark <套件>。这里的套件：%s"
+    elseif locale == "zhTW" then
+        -- Traditional Chinese: made from the zhCN lines above by Warlock Kit's
+        -- tools/make_zhtw.py. Change those (or its word list), not these.
+        Loc["Move kits"] = "移動套件"
+        Loc["Drag to move your kits together. Drag to a screen edge to tuck them all into the kit box there. Drag a kit away from the pin to float it on its own; drop it near the pin to dock it again."] = "拖曳可一起移動你的套件。拖到螢幕邊緣可把它們全部收進那裡的套件框。把某個套件拖離停靠點可讓它單獨浮動；放到停靠點附近可重新停靠。"
+        Loc["Move the kit box"] = "移動套件框"
+        Loc["Drag along any edge of the screen. Drop it on another box to merge them; drag it away from the edge to put its kits back on the pin."] = "沿螢幕任意邊緣拖曳。放到另一個框上可合併；拖離邊緣可把其中的套件放回停靠點。"
+        Loc["Kits"] = "套件"
+        Loc["Settings"] = "設定"
+        Loc["Click: show or hide each kit, and open its settings"] = "點擊：顯示或隱藏各個套件，並開啟其設定"
+        Loc["Drag: move around the minimap"] = "拖曳：沿小地圖移動"
+        Loc["can't park %s (in combat, or it's an edges-only kit)"] = "無法停放 %s（戰鬥中，或它是只能停在邊緣的套件）"
+        Loc["/kitdock park <kit> or /kitdock unpark <kit>. Kits here: %s"] = "/kitdock park <套件> 或 /kitdock unpark <套件>。這裡的套件：%s"
     end
 end
 D.kits = D.kits or {}
