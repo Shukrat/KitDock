@@ -45,9 +45,14 @@ local addonName, ns = ...
 -- and goes back in when it closes. Like everything else here, boxes only
 -- move out of combat: in combat they stay as they were, and a kit in a box
 -- stays there.
+--
+-- From v29 (with Kit Core v40) a kit in a box opens and closes in combat
+-- too, where it sits in the box. The dock keeps where each kit's buttons
+-- go in the box's row (D.BoxSpots) for the kit's secure code, and catches
+-- the box up when one opens or closes in a fight (D.CombatBox).
 ---------------------------------------------------------------------------
 
-local VERSION = 30
+local VERSION = 29
 local D = _G.KitDock
 if D and (D.version or 0) >= VERSION then
     ns.Dock = D
@@ -1509,9 +1514,10 @@ local function LayoutBoxKits(f, keys, before)
     end
     if anyOpen then f.off, f.out, f.linger = PARK_SHOW, true, 0 end -- (out while a kit is open from it)
     -- The open kit has a still gold glow round it in the box (the glow art,
-    -- not animated).
+    -- not animated). Made with the box's first layout, so it's there for a
+    -- kit opened from the box in combat too (D.CombatBox).
     local hl = f.openHL
-    if anyOpen and not hl then
+    if not hl then
         hl = f:CreateTexture(nil, "ARTWORK")
         hl:SetTexture(D.media .. "glow_ring")
         hl:SetBlendMode("ADD")
@@ -1656,6 +1662,14 @@ local function RelayNotices(fr)
         fr.quiet = true
         return
     end
+    -- What goes where in this row, kept for each kit (see D.BoxSpots): every
+    -- kit in the box starts with none, and Put fills them in.
+    if not InCombatLockdown() then
+        for _, k in ipairs(BoxKeys(b)) do
+            local api = D.kits[k]
+            if api then api.boxSpots = {} end
+        end
+    end
     local decor = DecorFrame(fr)
     if decor.boxFade == "out" then
         decor.boxFade = nil
@@ -1716,6 +1730,7 @@ local function RelayNotices(fr)
         f:ClearAllPoints()
         f:SetPoint("CENTER", g.api.kit, "CENTER", px, py)
         f.placedX, f.placedY = px, py
+        if g.api.boxSpots then g.api.boxSpots[f] = { px, py } end
     end
     local a = -total / 2
     for gi, g in ipairs(groups) do
@@ -1757,6 +1772,28 @@ local function RelayNotices(fr)
     HideDecor(fr, "glyphs", #groups + 1)
 end
 
+-- For the kits (Kit Core v40, opening a boxed kit in combat): where each of
+-- a boxed kit's frames goes in its box's row ({ [frame] = { x, y } },
+-- offsets from the kit button's middle, in the frame's own scale), as the
+-- row was last laid out with none of the box's kits open. nil when the kit
+-- isn't in a box or no row has been laid out for it yet.
+function D.BoxSpots(key)
+    local api = D.kits[key]
+    if not (api and IsParked(key) and Parkable(key)) then return nil end
+    return api.boxSpots
+end
+
+-- The other kits in the same box (loaded and showing), in its order.
+function D.BoxMates(key)
+    local b = BoxOf(key)
+    local list = {}
+    if not b then return list end
+    for _, k in ipairs(BoxKeys(b)) do
+        if k ~= key then list[#list + 1] = k end
+    end
+    return list
+end
+
 -- For the kits: what a boxed kit shows now, in order.
 function D.BoxNotices(key, list)
     D.notices[key] = list
@@ -1764,6 +1801,65 @@ function D.BoxNotices(key, list)
     if not b then return end
     for _, fr in ipairs(D.boxFrames) do
         if fr.box == b and fr:IsShown() then return RelayNotices(fr) end
+    end
+end
+
+-- A kit in a box opened or closed in combat (Kit Core's secure code has
+-- already put the other kits' buttons away, or back): the rest of the box
+-- catches up as far as it can in a fight. The other kits go quiet while it's
+-- open; the box's kit icons and rules, and the other kits' own frames in the
+-- row (timers and such, not secure), hide while it's open and come back as
+-- it closes; the open kit gets its glow in the box. Nothing moves: the box
+-- stays as it was, and the first layout after combat tidies up.
+function D.CombatBox(key)
+    local api = D.kits[key]
+    local b = BoxOf(key)
+    if not (api and b) then return end
+    local open = api.IsOpen() and true or false
+    SetQuiet(api, false)
+    for _, k in ipairs(BoxKeys(b)) do
+        local o = D.kits[k]
+        if k ~= key and o then
+            SetQuiet(o, open)
+            for f in pairs(o.boxSpots or {}) do
+                if not (f.IsProtected and f:IsProtected()) then
+                    if open and f:IsShown() then
+                        f.kdCombatHid = true
+                        f:Hide()
+                    elseif not open and f.kdCombatHid then
+                        f.kdCombatHid = nil
+                        f:Show()
+                    end
+                end
+            end
+        end
+    end
+    for _, fr in ipairs(D.boxFrames) do
+        if fr.box == b and not fr.ghost then
+            fr.quiet = open or nil
+            local decor = fr.decor
+            if decor then
+                decor.boxFade = nil
+                if decor.fadeAG then -- (a fade under way: it would hide or show it after)
+                    decor.fadeDone = nil
+                    decor.fadeAG:Stop()
+                end
+                decor:SetAlpha(1)
+                decor:SetShown(not open)
+            end
+            local hl = fr.openHL -- (made by the box's first layout, see LayoutBoxKits)
+            if hl then
+                local at = api.boxAt
+                if open and at then
+                    hl:SetSize(PARK_SIZE * 1.6, PARK_SIZE * 1.6)
+                    hl:ClearAllPoints()
+                    hl:SetPoint("CENTER", fr, "CENTER", at[1], at[2])
+                    hl:Show()
+                else
+                    hl:Hide()
+                end
+            end
+        end
     end
 end
 
