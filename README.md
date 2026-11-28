@@ -12,6 +12,8 @@ A second, smaller dock sits at the top middle of the screen, tucked half off the
 
 A kit can register an optional `Park(on)` function to hide or show its pinned slots while parked. Without it the kit is fanned upward, which sends its slots off the top of the screen. The dock only moves out of combat.
 
+From v29 (with Kit Core v40) a kit in a tuck box opens and closes in combat where it sits. Kit Dock keeps where each boxed kit's buttons go in the box's row, as it was last laid out with no kit from the box open (`D.BoxSpots(key)`, offsets from the kit button), lists the other kits in a kit's box (`D.BoxMates(key)`), and catches the box up when a kit opens or closes in a fight (`D.CombatBox(key)`): the other kits go quiet, the box's kit icons, dividers and the kits' own frames in the row hide while it's open, and the open kit gets its glow. The box itself still only moves out of combat.
+
 ## How the kits use it
 
 Each kit's `.pkgmeta` pulls this repository into `Libs/KitDock` when a release is built, pinned to a tag:
